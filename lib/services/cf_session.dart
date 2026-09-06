@@ -261,10 +261,31 @@ const String kPageShadeScript = r'''
   var lifted = [];
 
   function lift() {
+    // The interstitial builds the widget in stages: #challenge-stage and
+    // #turnstile-wrapper exist before the cross-origin iframe inside them
+    // does. Matching only the iframe meant the widget was covered for as long
+    // as it took to arrive, and stayed covered whenever it never arrived under
+    // that exact selector.
     var f = document.querySelector(
-      'iframe[src*="challenges.cloudflare.com"], .cf-turnstile');
+      'iframe[src*="challenges.cloudflare.com"], .cf-turnstile,' +
+      ' #turnstile-wrapper, #challenge-stage');
     if (!f) return;
-    for (var el = f; el && el !== document.body; el = el.parentElement) {
+
+    // Put it in the middle of our panel. Left in the page's own flow it sat in
+    // the top-left corner, against a heading and body text that the shade has
+    // hidden, so it read as a stray box rather than the thing to click.
+    f.style.setProperty('position', 'fixed', 'important');
+    f.style.setProperty('top', '50%', 'important');
+    f.style.setProperty('left', '50%', 'important');
+    f.style.setProperty('transform', 'translate(-50%, -50%)', 'important');
+    f.style.setProperty('margin', '0', 'important');
+    if (lifted.indexOf(f) < 0) lifted.push(f);
+
+    // Starts at the parent, not at f: f is fixed now, and the ancestor walk
+    // below forces position:relative, which would undo that immediately.
+    for (var el = f.parentElement;
+         el && el !== document.body;
+         el = el.parentElement) {
       el.style.setProperty('position', 'relative', 'important');
       el.style.setProperty('z-index', '2147483600', 'important');
       el.style.setProperty('background', BG, 'important');
@@ -284,6 +305,11 @@ const String kPageShadeScript = r'''
       el.style.removeProperty('z-index');
       el.style.removeProperty('background');
       el.style.removeProperty('visibility');
+      // Set only on the widget itself by lift(), to centre it.
+      el.style.removeProperty('top');
+      el.style.removeProperty('left');
+      el.style.removeProperty('transform');
+      el.style.removeProperty('margin');
     }
     lifted = [];
     var st = document.getElementById('pc-style');
@@ -303,6 +329,11 @@ const String kPageShadeScript = r'''
     style(); shade(); lift();
   }
 
+  // Exposed so the gate can re-run it the moment clearance is confirmed. The
+  // MutationObserver below only fires on a change, and a page that is already
+  // finished loading does not make one.
+  window.__pcApplyShade = apply;
+
   apply();
   document.addEventListener('DOMContentLoaded', apply);
   try {
@@ -319,6 +350,28 @@ UnmodifiableListView<UserScript> get kShadeUserScripts =>
         source: kPageShadeScript,
         injectionTime: UserScriptInjectionTime.AT_DOCUMENT_START,
       ),
+    ]);
+
+/// The gate's scripts: the shade, preceded by a flag that holds it off until
+/// we are actually through Cloudflare.
+///
+/// The rule is deliberately about clearance rather than about recognising a
+/// challenge. Trying to spot the challenge by its markup does not hold up —
+/// `#challenge-form` and `#challenge-running` were absent from the very page
+/// titled "Just a moment...", so the shade stayed up over the widget and left
+/// a blank panel with nothing to tick. Whether we are through, on the other
+/// hand, is already known for certain, because the API probe settles it.
+///
+/// So: not through yet, no shade, and whatever Cloudflare puts up is visible
+/// and clickable. Through, shade on, and animepahe's own page is hidden behind
+/// our UI — which is the only page anyone wanted hidden.
+UnmodifiableListView<UserScript> get kGateUserScripts =>
+    UnmodifiableListView([
+      UserScript(
+        source: 'window.__pcNoShade = true;',
+        injectionTime: UserScriptInjectionTime.AT_DOCUMENT_START,
+      ),
+      ...kShadeUserScripts,
     ]);
 
 enum _Phase { resolving, verifying, cleared }
@@ -349,15 +402,23 @@ class CfGatewayWidget extends StatefulWidget {
 }
 
 class _CfGatewayWidgetState extends State<CfGatewayWidget> {
-  /// How long one mirror gets before the next is tried. Cloudflare's managed
-  /// challenge usually clears itself within about 15s, so this waits past that
-  /// before concluding this host is not going to co-operate.
-  static const _perHostTimeout = Duration(seconds: 20);
+  /// How long one mirror gets before the next is tried.
+  ///
+  /// A managed challenge often clears itself in about 15s, but one that puts up
+  /// a checkbox waits on a person, and 20s was not long enough to read the
+  /// screen and click. Rotating mid-challenge is worse than waiting: the next
+  /// host starts its own challenge from nothing, so a series of too-short
+  /// attempts never finishes anywhere.
+  static const _perHostTimeout = Duration(seconds: 60);
 
-  /// The gap between clearance probes. Short, because the cleared site is
-  /// visible behind the panel until a probe notices, and a long gap leaves the
-  /// raw animepahe page on screen for no reason.
-  static const _pollInterval = Duration(milliseconds: 1500);
+  /// The gap between clearance probes.
+  ///
+  /// This was 1.5s, which meant roughly 40 requests a minute at a host that was
+  /// still challenging us — and animepahe answered that with 429. A rate-
+  /// limited challenge cannot complete, so the probe was preventing the very
+  /// thing it was waiting for. Probes are also skipped entirely while the
+  /// document is still a challenge page; see [_check].
+  static const _pollInterval = Duration(seconds: 3);
 
   /// Pins the WebView's element identity. Re-parenting it made Flutter dispose
   /// the element and take the cleared session with it, so its ancestor chain is
@@ -480,14 +541,81 @@ class _CfGatewayWidgetState extends State<CfGatewayWidget> {
     _poll = Timer.periodic(_pollInterval, (_) => _check());
   }
 
+  /// Set once the failure has been explained, so a poll every few seconds does
+  /// not repeat the whole ladder.
+  bool _explained = false;
+
+  /// Says *why* the readiness probe failed, once, in the debug log.
+  ///
+  /// The probe is a single request to one API path, so every cause reads the
+  /// same from the outside: a challenge that has not been solved, a mirror
+  /// that never served the API, and an API path the site has since moved all
+  /// arrive here as one unhelpful status. This separates them by asking what
+  /// the document actually is and which paths answer, which is the difference
+  /// between "wait longer" and "this endpoint no longer exists".
+  Future<void> _explainFailure(
+      InAppWebViewController c, String result) async {
+    if (_explained) return;
+    _explained = true;
+
+    try {
+      final probe = await c.callAsyncJavaScript(functionBody: r'''
+        const lines = [];
+        lines.push('document: ' + location.href);
+        lines.push('title: ' + document.title);
+        lines.push('html: ' + document.documentElement.innerHTML.length + ' bytes');
+
+        // No request ladder here. Every path was already shown to return the
+        // same challenge page, so re-fetching them proves nothing and the
+        // requests themselves are what earned us 429s. What is still unknown
+        // is what the challenge page is made of — which markers identify it,
+        // and whether it contains a widget to click at all.
+        lines.push('shaded: ' + !!document.getElementById('pc-shade'));
+
+        const named = document.querySelectorAll('[id]');
+        lines.push('ids: ' + Array.from(named)
+          .map(function (e) { return e.id; }).slice(0, 25).join(', '));
+
+        lines.push('iframes: ' + Array.from(document.querySelectorAll('iframe'))
+          .map(function (f) { return (f.src || '(no src)').slice(0, 60); })
+          .join(' | '));
+
+        lines.push('inputs: ' + document.querySelectorAll('input').length +
+          ' buttons: ' + document.querySelectorAll('button').length +
+          ' forms: ' + document.querySelectorAll('form').length);
+
+        lines.push('body text: ' +
+          (document.body ? document.body.innerText : '')
+            .replace(/\s+/g, ' ').trim().slice(0, 200));
+
+        return lines.join('\n');
+      ''');
+      debugPrint('CFGATE DIAGNOSIS (probe was "$result")\n'
+          '${probe?.value ?? probe?.error}');
+    } catch (e) {
+      debugPrint('CFGATE: could not diagnose: $e');
+    }
+  }
+
   /// Checks whether Cloudflare has let us through, and if so hands the cleared
   /// controller to [CfSession] and releases the app.
   ///
-  /// The API call is the only signal consulted. Inspecting the page for
-  /// Cloudflare markers does not work — Cloudflare injects its
+  /// Clearance is still decided by the API call alone: it answers with JSON
+  /// exactly when we are through, and nothing else does. Markers cannot be used
+  /// to declare success, because Cloudflare injects its
   /// `/cdn-cgi/challenge-platform/` script into ordinary protected pages too,
-  /// so a marker check matches on a perfectly cleared page. The API answers
-  /// with JSON exactly when we are through, and nothing else does.
+  /// so a marker check matches on a perfectly cleared page.
+  ///
+  /// A challenge is recognised from that same response rather than from the
+  /// page, so it costs no extra request: Cloudflare answers a challenged
+  /// request with 403 and an HTML body, where the API would answer with JSON.
+  /// Reading it off the DOM instead does not work — the interstitial's element
+  /// ids are randomised per response (`jddkS1`, `QeINV1`, and so on), so a
+  /// selector written against them never matches.
+  ///
+  /// Knowing that matters because it is the difference between "wait" and
+  /// "something is wrong". Treating it as a fault is what led to probing every
+  /// 1.5s and earning 429s, and a rate-limited challenge cannot complete.
   Future<void> _check() async {
     if (!mounted || _phase == _Phase.cleared) return;
     final c = _controller;
@@ -501,8 +629,12 @@ class _CfGatewayWidgetState extends State<CfGatewayWidget> {
           headers: { 'Accept': 'application/json',
                      'X-Requested-With': 'XMLHttpRequest' },
         });
-        if (!r.ok) return 'status:' + r.status;
         const t = (await r.text()).trim();
+        if (!r.ok) {
+          const html = t.slice(0, 400).toLowerCase().includes('<html');
+          return (r.status === 403 && html ? 'challenging:' : 'status:')
+            + r.status;
+        }
         return t.startsWith('{') || t.startsWith('[') ? 'ok' : 'notjson';
       ''');
       result = probe?.error != null
@@ -515,7 +647,18 @@ class _CfGatewayWidgetState extends State<CfGatewayWidget> {
     debugPrint('CFGATE: probe=$result host=${DomainResolver.host}');
     if (!mounted || _phase == _Phase.cleared) return;
 
+    // A challenge in progress is the expected state, not a fault: say so
+    // plainly and ask nothing further. Running the diagnosis here would fire
+    // six more requests at a host that is already refusing us, which is how
+    // the 429s started in the first place.
+    if (result.startsWith('challenging')) {
+      setState(() => _diag = 'verifying, this can take a moment');
+      return;
+    }
+
     if (result != 'ok') {
+      await _explainFailure(c, result);
+      if (!mounted || _phase == _Phase.cleared) return;
       setState(() => _diag = result);
       return;
     }
@@ -523,6 +666,19 @@ class _CfGatewayWidgetState extends State<CfGatewayWidget> {
     _phase = _Phase.cleared;
     _poll?.cancel();
     _hostTimer?.cancel();
+
+    // Through Cloudflare, so animepahe's own page is what is on screen now —
+    // cover it. Until this point the shade was held off so the challenge
+    // stayed visible and clickable.
+    try {
+      await c.evaluateJavascript(source: '''
+        window.__pcNoShade = false;
+        if (window.__pcApplyShade) window.__pcApplyShade();
+      ''');
+    } catch (_) {
+      // Cosmetic only: the session is cleared either way.
+    }
+
     await CfSession().attach(c);
     if (!mounted) return;
     setState(() {});
@@ -567,7 +723,8 @@ class _CfGatewayWidgetState extends State<CfGatewayWidget> {
                 _controller = c;
                 _navigate();
               },
-              initialUserScripts: kShadeUserScripts,
+              // Shade held off until clearance; see [kGateUserScripts].
+              initialUserScripts: kGateUserScripts,
               initialSettings: InAppWebViewSettings(
                 userAgent: CfSession.webViewUserAgent,
                 // WKWebView's own UA stops at "(KHTML, like Gecko)" with no
