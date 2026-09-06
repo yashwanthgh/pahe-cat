@@ -766,10 +766,15 @@ class _DownloadsPanelState extends State<_DownloadsPanel> {
     final total = active.length;
     if (total == 0) return const SizedBox.shrink();
 
-    // Overall progress across everything queued, so one bar answers "how far
-    // along is this" without expanding.
-    final overall =
-        active.fold<double>(0, (sum, i) => sum + i.progress) / total;
+    // Weighted by size rather than averaging the percentages: a mean drops
+    // every time one item finishes and another starts at zero, which made the
+    // bar lurch backwards. Bytes only ever accumulate.
+    final receivedBytes =
+        active.fold<int>(0, (sum, i) => sum + i.downloadedBytes);
+    final totalBytes = active.fold<int>(0, (sum, i) => sum + i.totalBytes);
+    final overall = totalBytes > 0
+        ? receivedBytes / totalBytes
+        : active.fold<double>(0, (sum, i) => sum + i.progress) / total;
     final running = active
         .where((i) => i.status == DownloadStatus.downloading)
         .length;

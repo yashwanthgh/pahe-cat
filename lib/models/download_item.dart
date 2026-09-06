@@ -28,8 +28,9 @@ class DownloadItem extends ChangeNotifier {
   final String audio;
 
   /// The pahe.win download page URL. Kept so a retry can re-resolve a link
-  /// that expired.
-  final String kwikUrl;
+  /// that expired. Not final: a queued batch item carries no link of its own
+  /// and learns it from the play page when its turn comes.
+  String kwikUrl;
 
   /// Groups the items queued by one action, so a whole block can be cancelled
   /// without picking its episodes out one at a time. Empty for a single
@@ -49,6 +50,9 @@ class DownloadItem extends ChangeNotifier {
 
   /// The direct file URL. Cleared on retry so it gets resolved again.
   String sourceUrl;
+
+  /// Where the platform wrote the file, when it downloaded one itself.
+  String downloadedFilePath;
 
   /// kwik's download page, past the redirector's countdown and robot check.
   /// Where a browser hand-off starts.
@@ -87,6 +91,7 @@ class DownloadItem extends ChangeNotifier {
     this.outputPath = '',
     this.refererUrl = '',
     this.kwikPageUrl = '',
+    this.downloadedFilePath = '',
   });
 
   DownloadStatus get status => _status;

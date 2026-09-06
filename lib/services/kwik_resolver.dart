@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:io';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_inappwebview/flutter_inappwebview.dart';
@@ -43,17 +44,25 @@ class KwikResolver {
   /// The referer matters: the file is served by kwik's CDN, which refuses a
   /// request that presents animepahe's referer and cookies instead of its
   /// own.
-  static Future<({String url, String referer, String page})> resolve(
-      OverlayState overlay, String kwikUrl) async {
-    final completer =
-        Completer<({String url, String referer, String page})>();
+  /// Where the patched macOS plugin writes downloads. Must match the Swift.
+  static const tempFolder = 'pahe_cat_downloads';
+
+  static Future<KwikResult> resolve(
+    OverlayState overlay,
+    String kwikUrl, {
+    void Function(int received, int total)? onProgress,
+    bool Function()? isCancelled,
+  }) async {
+    final completer = Completer<KwikResult>();
     late OverlayEntry entry;
 
     entry = OverlayEntry(
       builder: (_) => _KwikWebView(
         kwikUrl: kwikUrl,
-        onResolved: (url) {
-          if (!completer.isCompleted) completer.complete(url);
+        onProgress: onProgress,
+        isCancelled: isCancelled,
+        onResolved: (result) {
+          if (!completer.isCompleted) completer.complete(result);
         },
         onError: (e) {
           if (!completer.isCompleted) completer.completeError(e);
@@ -63,10 +72,12 @@ class KwikResolver {
 
     overlay.insert(entry);
     try {
+      // Long, because this now covers the transfer itself and a large episode
+      // takes minutes. Progress reporting is what catches a genuine stall.
       return await completer.future.timeout(
-        const Duration(seconds: 45),
+        const Duration(minutes: 90),
         onTimeout: () => throw TimeoutException(
-            'kwik did not hand over a media URL for $kwikUrl'),
+            'kwik did not hand over the file for $kwikUrl'),
       );
     } finally {
       entry.remove();
@@ -74,15 +85,183 @@ class KwikResolver {
   }
 }
 
+/// Finds kwik's download page behind the redirector, and stops there.
+///
+/// Used when the file is going to be handed to the browser anyway: the browser
+/// presses the Download button itself, so passing kwik's Cloudflare check and
+/// submitting the form in-app is work whose result is thrown away. Stopping at
+/// the page turns roughly fifteen seconds into about two.
+class KwikPageFinder {
+  static Future<String> find(OverlayState overlay, String redirectorUrl) async {
+    final completer = Completer<String>();
+    late OverlayEntry entry;
+
+    entry = OverlayEntry(
+      builder: (_) => _PageFinderView(
+        url: redirectorUrl,
+        onFound: (page) {
+          if (!completer.isCompleted) completer.complete(page);
+        },
+      ),
+    );
+
+    overlay.insert(entry);
+    try {
+      return await completer.future.timeout(
+        const Duration(seconds: 20),
+        // The redirector itself is still a usable starting point, just a
+        // slower one for whoever opens it.
+        onTimeout: () => '',
+      );
+    } finally {
+      entry.remove();
+    }
+  }
+}
+
+class _PageFinderView extends StatefulWidget {
+  final String url;
+  final ValueChanged<String> onFound;
+
+  const _PageFinderView({required this.url, required this.onFound});
+
+  @override
+  State<_PageFinderView> createState() => _PageFinderViewState();
+}
+
+class _PageFinderViewState extends State<_PageFinderView> {
+  final _key = GlobalKey();
+  bool _done = false;
+
+  @override
+  Widget build(BuildContext context) {
+    // Small but real: the platform throttles work for a view it thinks is
+    // invisible, which is what stalled the resolver at one pixel.
+    return Positioned(
+      right: 16,
+      bottom: 16,
+      width: 200,
+      height: 120,
+      child: Material(
+        elevation: 4,
+        borderRadius: BorderRadius.circular(10),
+        color: const Color(0xFFFCFBF9),
+        child: ClipRRect(
+          borderRadius: BorderRadius.circular(10),
+          child: Stack(
+            children: [
+              Positioned.fill(
+                child: InAppWebView(
+                  key: _key,
+                  initialUrlRequest: URLRequest(
+                    url: WebUri(widget.url),
+                    headers: {'Referer': DomainResolver.referer},
+                  ),
+                  initialUserScripts: kShadeUserScripts,
+                  initialSettings: InAppWebViewSettings(
+                    userAgent: CfSession.webViewUserAgent,
+                    applicationNameForUserAgent:
+                        'Version/17.4 Safari/605.1.15',
+                    javaScriptEnabled: true,
+                    domStorageEnabled: true,
+                    thirdPartyCookiesEnabled: true,
+                    javaScriptCanOpenWindowsAutomatically: false,
+                    supportMultipleWindows: false,
+                    transparentBackground: true,
+                  ),
+                  onCreateWindow: (c, req) async => false,
+                  // The redirector's adverts must not steal the main frame
+                  // before its markup can be read.
+                  shouldOverrideUrlLoading: (c, action) async {
+                    final host = action.request.url?.host ?? '';
+                    if (action.isForMainFrame &&
+                        host.isNotEmpty &&
+                        !_KwikWebViewState._allowed(host)) {
+                      return NavigationActionPolicy.CANCEL;
+                    }
+                    return NavigationActionPolicy.ALLOW;
+                  },
+                  onLoadStop: (c, url) async {
+                    if (_done) return;
+                    try {
+                      final r = await c.evaluateJavascript(source: r'''
+                        (function () {
+                          var a = document.querySelector('a[href*="kwik."]');
+                          if (a && a.href) return a.href;
+                          var m = document.documentElement.innerHTML.match(
+                            /https?:\/\/[^"'\s\\<>]*kwik\.[a-z]{2,6}\/[fd]\/[\w-]+/);
+                          return m ? m[0] : '';
+                        })()
+                      ''');
+                      final page = r?.toString().trim() ?? '';
+                      if (page.isEmpty || page == 'null') return;
+                      _done = true;
+                      debugPrint('KWIKPAGE: found $page');
+                      widget.onFound(page);
+                    } catch (e) {
+                      debugPrint('KWIKPAGE: threw $e');
+                    }
+                  },
+                ),
+              ),
+              const Positioned(
+                left: 10,
+                right: 10,
+                bottom: 8,
+                child: Text(
+                  'Finding the download…',
+                  style: TextStyle(
+                    fontSize: 10,
+                    fontWeight: FontWeight.w700,
+                    color: Color(0xFF7A716A),
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// What a resolution produced.
+///
+/// [filePath] is set when the WebView actually downloaded the episode, which
+/// is the only route the media host permits. The other fields describe the
+/// link, and are what a browser hand-off needs when downloading in-app is not
+/// available.
+class KwikResult {
+  final String url;
+  final String referer;
+  final String page;
+  final String filePath;
+  final int fileSize;
+
+  const KwikResult({
+    this.url = '',
+    this.referer = '',
+    this.page = '',
+    this.filePath = '',
+    this.fileSize = 0,
+  });
+
+  bool get hasFile => filePath.isNotEmpty;
+}
+
 class _KwikWebView extends StatefulWidget {
   final String kwikUrl;
-  final ValueChanged<({String url, String referer, String page})> onResolved;
+  final ValueChanged<KwikResult> onResolved;
   final ValueChanged<Object> onError;
+  final void Function(int received, int total)? onProgress;
+  final bool Function()? isCancelled;
 
   const _KwikWebView({
     required this.kwikUrl,
     required this.onResolved,
     required this.onError,
+    this.onProgress,
+    this.isCancelled,
   });
 
   @override
@@ -121,6 +300,10 @@ class _KwikWebViewState extends State<_KwikWebView> {
   /// The page the WebView is on, which becomes the referer for the file.
   String _pageUrl = '';
 
+  /// The media URL, once seen, and when its navigation began.
+  String _mediaUrl = '';
+  DateTime? _mediaNavigationStartedAt;
+
   /// kwik's own download page, past the ad gate.
   ///
   /// Reported so a browser hand-off can start here rather than at the
@@ -128,13 +311,100 @@ class _KwikWebViewState extends State<_KwikWebView> {
   /// countdown or the are-you-a-robot step the redirector imposes.
   String _kwikPage = '';
 
-  void _finish(String url, String how) {
+  /// Reports a failure once, and stops everything still running.
+  void _fail(Object e) {
     if (_done) return;
     _done = true;
     _poll?.cancel();
-    debugPrint('KWIK: resolved via $how -> $url (referer $_pageUrl)');
-    widget.onResolved(
-        (url: url, referer: _pageUrl, page: _kwikPage));
+    _fileWatch?.cancel();
+    debugPrint('KWIK: failed — $e');
+    widget.onError(e);
+  }
+
+  void _finish(String url, String how, {String filePath = '', int size = 0}) {
+    if (_done) return;
+    _done = true;
+    _poll?.cancel();
+    _fileWatch?.cancel();
+    debugPrint('KWIK: resolved via $how -> $url (referer $_pageUrl)'
+        '${filePath.isEmpty ? '' : ' file=$filePath'}');
+    widget.onResolved(KwikResult(
+      url: url,
+      referer: _pageUrl,
+      page: _kwikPage,
+      filePath: filePath,
+      fileSize: size,
+    ));
+  }
+
+  /// Watches the file the platform is writing.
+  ///
+  /// The patched delegate hands WebKit a destination and returns; nothing
+  /// reports back when it finishes, so the file itself is the source of truth
+  /// for both progress and completion. That is also the most honest signal
+  /// available — it is the bytes actually on disk.
+  Timer? _fileWatch;
+  int _lastSize = -1;
+  int _stalledTicks = 0;
+
+  /// True once a transfer is being watched.
+  ///
+  /// WebKit reports the same download twice — once when the response becomes
+  /// a download and again when it asks where to put it — so without this two
+  /// timers watched one file, each resetting the other's idea of how far along
+  /// it was, and the progress bar walked backwards and forwards.
+  bool _watching = false;
+
+  void _watchFile(String path, int expected) {
+    if (_watching) return;
+    _watching = true;
+    _fileWatch?.cancel();
+    final file = File(path);
+    _stalledTicks = 0;
+    _lastSize = -1;
+
+    _fileWatch = Timer.periodic(const Duration(milliseconds: 400), (t) async {
+      if (_done) {
+        t.cancel();
+        return;
+      }
+      if (widget.isCancelled?.call() ?? false) {
+        t.cancel();
+        _fail(Exception('Cancelled'));
+        return;
+      }
+
+      int size;
+      try {
+        size = await file.exists() ? await file.length() : 0;
+      } catch (_) {
+        return; // being written to; try again
+      }
+
+      widget.onProgress?.call(size, expected);
+
+      if (expected > 0 && size >= expected) {
+        t.cancel();
+        debugPrint('KWIK: file complete at $size bytes');
+        _finish(_mediaUrl, 'webview download', filePath: path, size: size);
+        return;
+      }
+
+      // A file that stops growing well short of its length has failed; one
+      // that never appears at all means the patch did not take.
+      if (size == _lastSize) {
+        _stalledTicks++;
+        if (_stalledTicks > 75) {
+          t.cancel();
+          _fail(Exception(size == 0
+              ? 'The download never started writing'
+              : 'The download stopped at $size of $expected bytes'));
+        }
+      } else {
+        _stalledTicks = 0;
+        _lastSize = size;
+      }
+    });
   }
 
   /// Hosts this flow is allowed to visit.
@@ -344,8 +614,37 @@ class _KwikWebViewState extends State<_KwikWebView> {
                         onCreateWindow: (c, req) async => false,
                         shouldOverrideUrlLoading: _shouldOverride,
                         onLoadStop: _onLoadStop,
-                        onReceivedError: (c, req, err) => debugPrint(
-                            'KWIK: error on ${req.url} -> ${err.description}'),
+                        // Fires when the platform decides the response is a
+                        // file: proof the host served it.
+                        onDownloadStartRequest: (c, req) async {
+                          _reportProbe('became a download'
+                              ' (${req.contentLength} bytes,'
+                              ' ${req.mimeType},'
+                              ' "${req.suggestedFilename}")');
+                          // The patched delegate is writing it; watch the file
+                          // rather than finishing here, and keep this WebView
+                          // mounted, because disposing it cancels the
+                          // transfer it owns.
+                          final name = req.suggestedFilename ?? '';
+                          if (name.isEmpty) {
+                            _fail(Exception('The download had no filename'));
+                            return;
+                          }
+                          final dir = Directory(
+                              '${Directory.systemTemp.path}/'
+                              '${KwikResolver.tempFolder}');
+                          final path = '${dir.path}/$name';
+                          debugPrint('KWIK: watching $path');
+                          _watchFile(path, req.contentLength);
+                        },
+                        onReceivedError: (c, req, err) {
+                          if (_mediaUrl.isNotEmpty &&
+                              req.url.toString() == _mediaUrl) {
+                            _reportProbe('refused: ${err.description}');
+                          }
+                          debugPrint(
+                              'KWIK: error on ${req.url} -> ${err.description}');
+                        },
                       ),
                     ),
                     if (_needsHuman)
@@ -434,6 +733,9 @@ class _KwikWebViewState extends State<_KwikWebView> {
         supportMultipleWindows: false,
         mediaPlaybackRequiresUserGesture: false,
         transparentBackground: true,
+        // Makes the platform report a download rather than silently handling
+        // it, which is how we learn the host served the file.
+        useOnDownloadStart: true,
       );
 
   Future<NavigationActionPolicy> _shouldOverride(
@@ -442,8 +744,17 @@ class _KwikWebViewState extends State<_KwikWebView> {
     final url = uri?.toString() ?? '';
 
     if (_media.hasMatch(url)) {
-      _finish(_media.firstMatch(url)!.group(0)!, 'navigation');
-      return NavigationActionPolicy.CANCEL;
+      final media = _media.firstMatch(url)!.group(0)!;
+      // Allowed through rather than cancelled, to establish whether the host
+      // accepts a real navigation from the session that submitted its form.
+      // Cancelling it was reported as "Frame load interrupted", which is our
+      // own doing and says nothing about whether the host would have served
+      // it — the one fact that decides whether an in-app download is possible
+      // at all.
+      debugPrint('KWIK PROBE: letting the media navigation proceed -> $media');
+      _mediaUrl = media;
+      _mediaNavigationStartedAt = DateTime.now();
+      return NavigationActionPolicy.ALLOW;
     }
 
     // Only the main frame is policed; adverts in sub-frames are harmless
@@ -462,8 +773,27 @@ class _KwikWebViewState extends State<_KwikWebView> {
     return NavigationActionPolicy.ALLOW;
   }
 
+  /// Reports what the host did with the media navigation.
+  void _reportProbe(String outcome) {
+    final started = _mediaNavigationStartedAt;
+    if (started == null) return;
+    final ms = DateTime.now().difference(started).inMilliseconds;
+    debugPrint('KWIK PROBE: media navigation -> $outcome after ${ms}ms');
+  }
+
   Future<void> _onLoadStop(InAppWebViewController c, WebUri? url) async {
     debugPrint('KWIK: loaded $url');
+    if (url != null && _mediaUrl.isNotEmpty && url.toString() == _mediaUrl) {
+      // It loaded as a page: either the file is being displayed, or this is a
+      // block page wearing the file's URL. The title tells them apart.
+      final title = await c.getTitle();
+      final len = await c.evaluateJavascript(
+          source: 'document.documentElement.innerHTML.length');
+      _reportProbe('loaded as a page, title="$title" htmlLen=$len');
+      // Fall through: the resolver still needs to hand something back.
+      _finish(_mediaUrl, 'navigation');
+      return;
+    }
     if (url != null) _pageUrl = url.toString();
     final host = url?.host.toLowerCase() ?? '';
     // The redirector's own page: take the kwik link out of it rather than

@@ -43,17 +43,29 @@ class _PaheCatAppState extends State<PaheCatApp> {
   @override
   void initState() {
     super.initState();
-    DownloadManager().resolver = (url) {
+    DownloadManager().resolver = (url, {onProgress, isCancelled}) {
       // The navigator's own overlay, not Overlay.of(its context): that
       // searches ancestors, and the overlay is a descendant of the navigator.
       final overlay = _navigatorKey.currentState?.overlay;
       if (overlay == null) {
         throw StateError('App is not ready to resolve links yet');
       }
-      return KwikResolver.resolve(overlay, url);
+      return KwikResolver.resolve(
+        overlay,
+        url,
+        onProgress: onProgress,
+        isCancelled: isCancelled,
+      );
     };
     // The transfer needs one too: the file cannot be fetched by Dart at all.
     DownloadManager().overlayProvider = () => _navigatorKey.currentState?.overlay;
+    DownloadManager().pageFinder = (url) {
+      final overlay = _navigatorKey.currentState?.overlay;
+      if (overlay == null) {
+        throw StateError('App is not ready to find downloads yet');
+      }
+      return KwikPageFinder.find(overlay, url);
+    };
   }
 
   @override

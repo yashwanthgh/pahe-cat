@@ -9,6 +9,7 @@ import 'package:url_launcher/url_launcher.dart';
 import '../models/download_item.dart';
 import '../models/stream_source.dart';
 import 'animepahe_api.dart';
+import 'kwik_resolver.dart';
 import 'settings.dart';
 import 'webview_downloader.dart';
 
@@ -46,8 +47,17 @@ class DownloadManager extends ChangeNotifier {
   ///
   /// Injected because resolution needs a WebView, which needs a widget tree —
   /// something a plain service has no business holding. Set once at startup.
-  Future<({String url, String referer, String page})> Function(
-      String downloadPageUrl)? resolver;
+  /// Resolves a download page, and downloads the file when the platform
+  /// allows it — see [KwikResult.hasFile].
+  Future<KwikResult> Function(
+    String downloadPageUrl, {
+    void Function(int received, int total)? onProgress,
+    bool Function()? isCancelled,
+  })? resolver;
+
+  /// Finds kwik's download page without passing its Cloudflare check or
+  /// submitting its form — enough for a browser hand-off, and far quicker.
+  Future<String> Function(String redirectorUrl)? pageFinder;
 
   /// Supplies the overlay the transfer's WebView is mounted into.
   ///
@@ -92,6 +102,11 @@ class DownloadManager extends ChangeNotifier {
       batchLabel: batchLabel,
     );
     queue.add(item);
+    // Forwarded so anything watching the manager — the episode tiles, the
+    // tab badge, the panel — reacts to progress, not only to items being
+    // added and removed. Progress updates are already throttled at the
+    // source, so this is not chatty.
+    item.addListener(notifyListeners);
     notifyListeners();
     _process(item);
   }
@@ -215,17 +230,13 @@ class DownloadManager extends ChangeNotifier {
     }
   }
 
-  Future<void> _resolveOne(
-    DownloadItem item,
-    Future<({String url, String referer, String page})> Function(String)
-        resolve,
-  ) async {
+  /// The requested quality and audio, falling back so a batch does not stall
+  /// on the one episode that lacks a 1080p dub.
+  Future<StreamSource> _pickSource(DownloadItem item) async {
     final sources = await AnimePaheApi()
         .getSources(item.animeSession, item.episodeSession);
-
-    // The requested quality and audio, falling back so a batch does not stall
-    // on the one episode that lacks a 1080p dub.
     final wantDub = item.audio.toUpperCase() == 'DUB';
+
     StreamSource? pick;
     for (final test in [
       (StreamSource s) => s.isDub == wantDub && s.quality == item.quality,
@@ -240,19 +251,117 @@ class DownloadManager extends ChangeNotifier {
     }
     pick ??= sources.where((s) => s.canDownload).firstOrNull;
     if (pick == null) {
-      throw Exception('animepahe lists no download for EP ${item.episodeNumber}');
+      throw Exception(
+          'animepahe lists no download for EP ${item.episodeNumber}');
     }
+    return pick;
+  }
 
-    final resolved = await resolve(pick.downloadUrl);
+  Future<void> _resolveOne(
+    DownloadItem item,
+    Future<KwikResult> Function(
+      String, {
+      void Function(int received, int total)? onProgress,
+      bool Function()? isCancelled,
+    }) resolve,
+  ) async {
+    final pick = await _pickSource(item);
+    item.kwikUrl = pick.downloadUrl;
+
+    var lastTick = DateTime.now();
+    final resolved = await resolve(
+      pick.downloadUrl,
+      // Reported from here because the transfer happens during resolution:
+      // the WebView that navigates to the file is the only thing the host
+      // will serve, and it owns the download until it finishes.
+      onProgress: (received, total) {
+        final now = DateTime.now();
+        if (now.difference(lastTick).inMilliseconds < 250) return;
+        lastTick = now;
+        item.update(
+          status: DownloadStatus.downloading,
+          downloadedBytes: received,
+          totalBytes: total,
+          progress: total > 0 ? received / total : 0,
+        );
+      },
+      isCancelled: () => item.cancelToken.isCancelled,
+    );
+
     item.sourceUrl = resolved.url;
     item.refererUrl = resolved.referer;
     item.kwikPageUrl = resolved.page;
+    item.downloadedFilePath = resolved.filePath;
+    if (resolved.fileSize > 0) item.update(totalBytes: resolved.fileSize);
   }
 
 
   /// True once the media host has refused a transfer, so the rest of a batch
   /// does not spend ten seconds each rediscovering it.
   static bool _transferBlocked = false;
+
+  /// Moves a file the platform downloaded into the library.
+  ///
+  /// Renamed where possible and copied when the temporary folder is on a
+  /// different volume, which rename cannot cross.
+  Future<void> _adoptDownloadedFile(DownloadItem item, String outPath) async {
+    final source = File(item.downloadedFilePath);
+    if (!await source.exists()) {
+      throw FileSystemException(
+          'The downloaded file is missing', item.downloadedFilePath);
+    }
+    final size = await source.length();
+    try {
+      await source.rename(outPath);
+    } on FileSystemException {
+      await source.copy(outPath);
+      await source.delete();
+    }
+    item.outputPath = outPath;
+    item.update(
+      status: DownloadStatus.completed,
+      progress: 1.0,
+      downloadedBytes: size,
+      totalBytes: size,
+      statusMessage: 'Done',
+    );
+    debugPrint('DOWNLOAD: saved ${item.episodeNumber} to $outPath');
+  }
+
+  /// Finds the download page and hands it straight to the browser.
+  Future<void> _findPageThenHandOff(DownloadItem item) async {
+    item.update(
+      status: DownloadStatus.resolving,
+      statusMessage: 'Finding the download…',
+    );
+
+    var redirector = item.kwikUrl;
+    if (redirector.isEmpty && item.episodeSession.isNotEmpty) {
+      // A queued batch carries no link of its own; the play page has it.
+      final pick = await _pickSource(item);
+      redirector = pick.downloadUrl;
+      item.kwikUrl = redirector;
+    }
+    if (redirector.isEmpty) {
+      item.update(
+        status: DownloadStatus.failed,
+        statusMessage: 'animepahe lists no download for this episode',
+      );
+      return;
+    }
+
+    final find = pageFinder;
+    if (find != null) {
+      try {
+        final page = await find(redirector);
+        if (page.isNotEmpty) item.kwikPageUrl = page;
+      } catch (e) {
+        // The redirector still works as a starting point, just more slowly.
+        debugPrint('DOWNLOAD: could not find the download page ($e)');
+      }
+    }
+    await _handToBrowser(item, 'host refuses in-app transfers');
+  }
 
   /// Hands the download to the system browser.
   ///
@@ -335,18 +444,18 @@ class DownloadManager extends ChangeNotifier {
     try {
       if (item.cancelToken.isCancelled) return;
 
+      // A host known to refuse transfers only needs its download page found,
+      // since the browser presses the button. Passing kwik's Cloudflare check
+      // and submitting its form would be work thrown away — about fifteen
+      // seconds of it, per episode.
+      if (_transferBlocked) {
+        await _findPageThenHandOff(item);
+        return;
+      }
+
       if (item.needsResolving) {
         await _resolve(item);
         if (item.cancelToken.isCancelled) return;
-      }
-
-      // Resolution still runs even when the host is known to refuse
-      // transfers, because it is what finds kwik's own download page — and
-      // handing the browser that page costs one click, where handing it the
-      // redirector costs a countdown, a robot check and then the click.
-      if (_transferBlocked) {
-        await _handToBrowser(item, 'host refuses in-app transfers');
-        return;
       }
 
       item.update(
@@ -371,6 +480,14 @@ class DownloadManager extends ChangeNotifier {
       final tempPath = '$outPath.part';
       final partial = File(tempPath);
       final startByte = await partial.exists() ? await partial.length() : 0;
+
+      // The WebView downloaded it during resolution, which is the only route
+      // the media host permits. Move it into place and there is nothing left
+      // to transfer.
+      if (item.downloadedFilePath.isNotEmpty) {
+        await _adoptDownloadedFile(item, outPath);
+        return;
+      }
 
       final overlay = overlayProvider?.call();
       if (overlay == null) {

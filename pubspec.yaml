@@ -38,6 +38,21 @@ dependencies:
   url_launcher: ^6.2.5
   open_filex: ^4.3.4
 
+# The macOS WebView plugin is vendored and patched.
+#
+# Its download delegate discards every download — it reports the URL to Dart
+# and cancels the transfer. That URL cannot be fetched by anything else: the
+# media host's Cloudflare rules refuse every request the app can make, while
+# accepting the WebView's own navigation, which delivers the file in about a
+# fifth of a second. Keeping those bytes is the only way to download an
+# episode without asking the viewer to click a button in a browser.
+#
+# See the PAHE CAT PATCH comments in
+# packages/flutter_inappwebview_macos/macos/Classes/InAppWebView/InAppWebView.swift
+dependency_overrides:
+  flutter_inappwebview_macos:
+    path: packages/flutter_inappwebview_macos
+
 dev_dependencies:
   flutter_test:
     sdk: flutter
