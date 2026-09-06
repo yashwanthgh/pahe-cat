@@ -4,6 +4,8 @@ import 'package:dio/dio.dart';
 import 'package:flutter/foundation.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import '../models/download_item.dart';
+import '../models/stream_source.dart';
+import 'animepahe_api.dart';
 import 'cf_session.dart';
 import 'settings.dart';
 
@@ -29,13 +31,21 @@ class DownloadManager extends ChangeNotifier {
     return resolveDownloadDir(p.getString('pref_download_dir') ?? '');
   }
 
+  /// Resolves a download page to a direct file URL.
+  ///
+  /// Injected because resolution needs a WebView, which needs a widget tree —
+  /// something a plain service has no business holding. Set once at startup.
+  Future<String> Function(String downloadPageUrl)? resolver;
+
   void enqueue({
     required String animeTitle,
     required int episodeNumber,
     required String quality,
     required String audio,
     required String kwikUrl,
-    required String resolvedUrl,
+    String resolvedUrl = '',
+    String animeSession = '',
+    String episodeSession = '',
     String episodeTitle = '',
     int totalEpisodes = 0,
   }) {
@@ -52,10 +62,78 @@ class DownloadManager extends ChangeNotifier {
       audio: audio,
       sourceUrl: resolvedUrl,
       kwikUrl: kwikUrl,
+      animeSession: animeSession,
+      episodeSession: episodeSession,
     );
     queue.add(item);
     notifyListeners();
     _process(item);
+  }
+
+  /// Queues a range of episodes in one go.
+  ///
+  /// Deliberately queues identities, not links. Resolving a whole season up
+  /// front takes minutes of WebView work and the earliest links have expired
+  /// by the time their turn arrives, so each item finds its own link when it
+  /// reaches the front of the queue.
+  void enqueueBatch({
+    required String animeTitle,
+    required String animeSession,
+    required List<({int number, String session, String title})> episodes,
+    required String quality,
+    required String audio,
+    int totalEpisodes = 0,
+  }) {
+    for (final e in episodes) {
+      enqueue(
+        animeTitle: animeTitle,
+        animeSession: animeSession,
+        episodeSession: e.session,
+        episodeNumber: e.number,
+        episodeTitle: e.title,
+        totalEpisodes: totalEpisodes,
+        quality: quality,
+        audio: audio,
+        kwikUrl: '',
+      );
+    }
+  }
+
+  /// Finds this item's download link, at the moment it is needed.
+  Future<void> _resolve(DownloadItem item) async {
+    final resolve = resolver;
+    if (resolve == null) {
+      throw StateError('No resolver configured for downloads');
+    }
+    item.update(
+      status: DownloadStatus.resolving,
+      statusMessage: 'Finding the file…',
+    );
+
+    final sources = await AnimePaheApi()
+        .getSources(item.animeSession, item.episodeSession);
+
+    // The requested quality and audio, falling back so a batch does not stall
+    // on the one episode that lacks a 1080p dub.
+    final wantDub = item.audio.toUpperCase() == 'DUB';
+    StreamSource? pick;
+    for (final test in [
+      (StreamSource s) => s.isDub == wantDub && s.quality == item.quality,
+      (StreamSource s) => s.isDub == wantDub,
+      (StreamSource s) => s.quality == item.quality,
+    ]) {
+      final hit = sources.where((s) => s.canDownload && test(s));
+      if (hit.isNotEmpty) {
+        pick = hit.first;
+        break;
+      }
+    }
+    pick ??= sources.where((s) => s.canDownload).firstOrNull;
+    if (pick == null) {
+      throw Exception('animepahe lists no download for EP ${item.episodeNumber}');
+    }
+
+    item.sourceUrl = await resolve(pick.downloadUrl);
   }
 
   Future<void> _process(DownloadItem item) async {
@@ -63,6 +141,12 @@ class DownloadManager extends ChangeNotifier {
     IOSink? sink;
     try {
       if (item.cancelToken.isCancelled) return;
+
+      if (item.needsResolving) {
+        await _resolve(item);
+        if (item.cancelToken.isCancelled) return;
+      }
+
       item.update(
         status: DownloadStatus.downloading,
         statusMessage: 'Starting…',

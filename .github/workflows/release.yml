@@ -149,8 +149,8 @@ jobs:
             | Linux | `PaheCat-Linux.tar.gz` |
 
             ### First run
-            **Windows** — unzip and run `Pahe Cat.exe`. Keep the whole folder
-            together; the exe needs the files beside it.
+            **Windows** — unzip and run `pahe_cat.exe`. Keep the whole folder
+            together; the exe needs the engine DLL and `data/` beside it.
 
             **macOS** — the app is unsigned, so the first launch needs
             right-click (or Control-click) then **Open**, rather than a

@@ -8,6 +8,7 @@ import '../models/watch_progress.dart';
 import '../services/providers.dart';
 import '../theme.dart';
 import 'episode_player_screen.dart';
+import 'bulk_download_sheet.dart';
 import 'resume_flow.dart';
 
 class AnimeDetailScreen extends ConsumerWidget {
@@ -80,6 +81,20 @@ class AnimeDetailScreen extends ConsumerWidget {
                         ),
                       ),
                       const Spacer(),
+                      if (episodes.episodes.isNotEmpty)
+                        IconButton(
+                          icon: const Icon(Icons.download_rounded,
+                              color: PaheColors.accent, size: 20),
+                          tooltip: 'Download several episodes',
+                          onPressed: () => BulkDownloadSheet.show(
+                            context,
+                            anime: anime,
+                            episodes: episodes.episodes,
+                            totalEpisodes: episodes.total > 0
+                                ? episodes.total
+                                : anime.episodes,
+                          ),
+                        ),
                       if (episodes.ranges.isNotEmpty)
                         _RangePicker(
                           ranges: episodes.ranges,

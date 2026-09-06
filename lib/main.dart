@@ -4,6 +4,8 @@ import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'screens/main_shell.dart';
 import 'services/cf_session.dart';
+import 'services/download_manager.dart';
+import 'services/kwik_resolver.dart';
 import 'services/image_session.dart';
 import 'services/preview_data.dart';
 import 'theme.dart';
@@ -33,9 +35,25 @@ class PaheCatApp extends StatefulWidget {
 class _PaheCatAppState extends State<PaheCatApp> {
   bool _cfReady = false;
 
+  /// Resolving a download link needs a WebView, which needs a widget tree, so
+  /// the download manager cannot do it alone. It is handed a resolver bound to
+  /// the app's own navigator instead.
+  final _navigatorKey = GlobalKey<NavigatorState>();
+
+  @override
+  void initState() {
+    super.initState();
+    DownloadManager().resolver = (url) {
+      final ctx = _navigatorKey.currentContext;
+      if (ctx == null) throw StateError('App is not ready to resolve links');
+      return KwikResolver.resolve(ctx, url);
+    };
+  }
+
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
+      navigatorKey: _navigatorKey,
       title: 'Pahe Cat',
       theme: PaheTheme.theme,
       debugShowCheckedModeBanner: false,

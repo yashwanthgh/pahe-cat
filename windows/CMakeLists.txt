@@ -1,14 +1,25 @@
 # Project-level configuration.
 cmake_minimum_required(VERSION 3.14)
-project(pahe_boy LANGUAGES CXX)
+project(pahe_cat LANGUAGES CXX)
 
-# The name of the executable created for the application. Change this to change
-# the on-disk name of your application.
-set(BINARY_NAME "pahe_boy")
+# The name of the executable created for the application.
+#
+# No spaces: this becomes a CMake target name, and those may only contain
+# letters, digits and _ . + -. The display name users actually see is set in
+# runner/Runner.rc and by the window title in runner/main.cpp.
+set(BINARY_NAME "pahe_cat")
 
 # Explicitly opt in to modern CMake behaviors to avoid warnings with recent
 # versions of CMake.
 cmake_policy(VERSION 3.14...3.25)
+
+# flutter_inappwebview_windows still includes <experimental/coroutine>, which
+# current MSVC turns into a hard compile error (STL1011) rather than a warning.
+# The compiler names this macro as the way to keep building; it is set at
+# project level so it reaches the plugin targets, which are added further down
+# and cannot be edited from here. Remove once that plugin moves to the C++20
+# <coroutine> header.
+add_compile_definitions(_SILENCE_EXPERIMENTAL_COROUTINE_DEPRECATION_WARNINGS)
 
 # Define build configuration option.
 get_property(IS_MULTICONFIG GLOBAL PROPERTY GENERATOR_IS_MULTI_CONFIG)
