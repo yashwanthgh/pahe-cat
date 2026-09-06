@@ -37,10 +37,19 @@ class DownloadNeedsRestart implements Exception {
 /// So the request is made by the WebView, whose TLS handshake and header order
 /// Cloudflare does accept, and only the bytes cross into Dart.
 ///
-/// The page is parked on the file's *own* origin first. Reading it from
-/// another origin fails the same-origin policy — a browser rule no cookie can
-/// get around — which is what stops poster images being read from the main
-/// page. On the file's origin the fetch is same-origin and permitted.
+/// Where the page is parked matters, and there is a genuine tension in it:
+///
+///  * On the *file's own* origin the fetch is same-origin and its body is
+///    readable — but the browser then sends that origin as the Referer, and
+///    the CDN answered 403 with an HTML body. It accepted the request as a
+///    browser request and refused it on hotlink protection.
+///  * On the *kwik* page the Referer is the one the CDN wants — a top-level
+///    navigation from there was not refused — but the fetch is cross-origin,
+///    so the body is only readable if the CDN sends CORS headers.
+///
+/// A cross-origin Referer cannot be forged: `fetch`'s `referrer` option only
+/// accepts a same-origin URL. So the orderings that could work are tried in
+/// turn and the one the server accepts is logged, rather than guessed at.
 ///
 /// Chosen over the platforms' own download delegates because those are
 /// implemented for macOS and Android but not for Windows, and would have left
@@ -118,6 +127,20 @@ class _DownloaderView extends StatefulWidget {
   State<_DownloaderView> createState() => _DownloaderViewState();
 }
 
+/// One way of asking the CDN for the file.
+class _Strategy {
+  /// Page to park on before fetching.
+  final String parkOn;
+
+  /// Passed to fetch. 'no-referrer' sends none at all, which some hotlink
+  /// checks treat as a direct request and allow.
+  final String? referrerPolicy;
+
+  final String name;
+
+  const _Strategy(this.name, this.parkOn, this.referrerPolicy);
+}
+
 class _DownloaderViewState extends State<_DownloaderView> {
   /// Pinned: this view is rebuilt as progress arrives, and a WebView that
   /// changes element identity mid-download is a dead download.
@@ -128,12 +151,54 @@ class _DownloaderViewState extends State<_DownloaderView> {
   bool _started = false;
   bool _finished = false;
 
-  /// The file's own origin, which the page must be on for the fetch to be
-  /// same-origin.
-  String get _origin {
+  int _attempt = 0;
+  late final List<_Strategy> _strategies = _buildStrategies();
+
+  /// The file's own origin. A fetch from here is same-origin and readable.
+  String get _fileOrigin {
     final u = Uri.parse(widget.url);
     return '${u.scheme}://${u.host}';
   }
+
+  List<_Strategy> _buildStrategies() {
+    final referer = widget.referer;
+    return [
+      // The Referer the CDN wants. Needs CORS to read the body, which many
+      // media CDNs do send.
+      if (referer.isNotEmpty) _Strategy('kwik-page', referer, null),
+      // Same-origin and readable, with no Referer at all.
+      _Strategy('file-origin-no-referrer', '$_fileOrigin/favicon.ico',
+          'no-referrer'),
+      // Same-origin and readable, sending the file host as the Referer.
+      _Strategy('file-origin', '$_fileOrigin/favicon.ico', null),
+    ];
+  }
+
+  _Strategy get _strategy => _strategies[_attempt];
+
+  /// Moves to the next ordering, or gives up with the last failure.
+  void _nextStrategy(InAppWebViewController c, Object failure) {
+    if (_finished) return;
+    if (_attempt + 1 >= _strategies.length) {
+      _fail(failure);
+      return;
+    }
+    _attempt++;
+    _received = 0;
+    _total = 0;
+    debugPrint('WVDL: trying ${_strategy.name}');
+    if (mounted) setState(() {});
+    c.loadUrl(urlRequest: URLRequest(
+      url: WebUri(_strategy.parkOn),
+      headers: {
+        if (widget.referer.isNotEmpty) 'Referer': widget.referer,
+      },
+    ));
+  }
+
+  /// Why the current ordering did not work, kept so the last one can report
+  /// something meaningful rather than a bare timeout.
+  Object? _lastFailure;
 
   void _fail(Object e) {
     if (_finished) return;
@@ -147,7 +212,10 @@ class _DownloaderViewState extends State<_DownloaderView> {
     widget.onDone(_total > 0 ? _total : widget.startByte + _received);
   }
 
+  InAppWebViewController? _controller;
+
   void _registerHandlers(InAppWebViewController c) {
+    _controller = c;
     // Reports the response before any bytes, so a refusal is known at once
     // rather than after a zero-byte "success".
     c.addJavaScriptHandler(
@@ -162,13 +230,14 @@ class _DownloaderViewState extends State<_DownloaderView> {
         debugPrint('WVDL: status=$status total=$total type=$type');
 
         if (status < 200 || status >= 300) {
-          _fail(DownloadRefused(status));
+          _lastFailure = DownloadRefused(status);
           return 'stop';
         }
-        // A challenge page comes back as HTML with a 200, which would
+        // A page rather than a file: a refusal or a challenge, which would
         // otherwise be written to disk as if it were video.
         if (type.startsWith('text/html')) {
-          _fail(Exception('The file host returned a page, not a file'));
+          _lastFailure =
+              Exception('The file host returned a page, not a file');
           return 'stop';
         }
         // Range was asked for but the whole file came back: appending it to
@@ -210,11 +279,26 @@ class _DownloaderViewState extends State<_DownloaderView> {
       handlerName: 'pcEnd',
       callback: (args) {
         final result = args.isNotEmpty ? args.first.toString() : '';
-        debugPrint('WVDL: end $result received=$_received');
+        debugPrint('WVDL: ${_strategy.name} ended "$result" '
+            'received=$_received');
         if (result == 'ok' && _started) {
           _succeed();
-        } else if (!_finished) {
-          _fail(Exception('Transfer ended early: $result'));
+          return 1;
+        }
+        if (_finished) return 1;
+        // Cancellation is the viewer's doing, not a reason to try again.
+        if (result == 'cancelled') {
+          _fail(Exception('Cancelled'));
+          return 1;
+        }
+        final failure = _lastFailure ??
+            Exception('Transfer ended early: $result');
+        _lastFailure = null;
+        final c = _controller;
+        if (c == null) {
+          _fail(failure);
+        } else {
+          _nextStrategy(c, failure);
         }
         return 1;
       },
@@ -227,6 +311,7 @@ class _DownloaderViewState extends State<_DownloaderView> {
   /// then base64-encoded would need most of a gigabyte of memory in the page.
   Future<void> _start(InAppWebViewController c) async {
     if (_started || _finished) return;
+    debugPrint('WVDL: fetching via ${_strategy.name}');
     try {
       final r = await c.callAsyncJavaScript(
         functionBody: r'''
@@ -247,10 +332,12 @@ class _DownloaderViewState extends State<_DownloaderView> {
 
           let res;
           try {
-            res = await fetch(url, {
+            const init = {
               credentials: 'include',
               headers: startByte > 0 ? { 'Range': 'bytes=' + startByte + '-' } : {},
-            });
+            };
+            if (referrerPolicy) init.referrerPolicy = referrerPolicy;
+            res = await fetch(url, init);
           } catch (e) {
             await call('pcEnd', 'fetch failed: ' + e);
             return 'fetch-failed';
@@ -305,6 +392,7 @@ class _DownloaderViewState extends State<_DownloaderView> {
           'url': widget.url,
           'startByte': widget.startByte,
           'chunkBytes': WebViewDownloader._chunkBytes,
+          'referrerPolicy': _strategy.referrerPolicy,
         },
       );
       if (r?.error != null) _fail(Exception('Transfer failed: ${r!.error}'));
@@ -339,10 +427,8 @@ class _DownloaderViewState extends State<_DownloaderView> {
                 child: InAppWebView(
                   key: _webViewKey,
                   initialUrlRequest: URLRequest(
-                    // Parked on the file's own origin so the fetch below is
-                    // same-origin. The page served here does not matter — even
-                    // a 404 is on the right origin.
-                    url: WebUri('$_origin/favicon.ico'),
+                    // The first ordering to try; see _buildStrategies.
+                    url: WebUri(_strategy.parkOn),
                     headers: {
                       if (widget.referer.isNotEmpty) 'Referer': widget.referer,
                     },
