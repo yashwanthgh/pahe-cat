@@ -1,0 +1,94 @@
+import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'screens/main_shell.dart';
+import 'services/cf_session.dart';
+import 'theme.dart';
+
+void main() {
+  WidgetsFlutterBinding.ensureInitialized();
+  SystemChrome.setPreferredOrientations([
+    DeviceOrientation.portraitUp,
+    DeviceOrientation.landscapeLeft,
+    DeviceOrientation.landscapeRight,
+  ]);
+  SystemChrome.setSystemUIOverlayStyle(const SystemUiOverlayStyle(
+    statusBarColor: Colors.transparent,
+    statusBarIconBrightness: Brightness.light,
+    systemNavigationBarColor: PaheColors.surface,
+  ));
+  runApp(const ProviderScope(child: PaheBoyApp()));
+}
+
+class PaheBoyApp extends StatefulWidget {
+  const PaheBoyApp({super.key});
+
+  @override
+  State<PaheBoyApp> createState() => _PaheBoyAppState();
+}
+
+class _PaheBoyAppState extends State<PaheBoyApp> {
+  bool _cfReady = false;
+
+  @override
+  Widget build(BuildContext context) {
+    return MaterialApp(
+      title: 'Pahe Boy',
+      theme: PaheTheme.dark,
+      debugShowCheckedModeBanner: false,
+      home: CfGatewayWidget(
+        onReady: () => setState(() => _cfReady = true),
+        child: _cfReady ? const MainShell() : const _SplashScreen(),
+      ),
+    );
+  }
+}
+
+class _SplashScreen extends StatelessWidget {
+  const _SplashScreen();
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      backgroundColor: PaheColors.bg,
+      body: Center(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            ShaderMask(
+              shaderCallback: (b) => PaheColors.gradient.createShader(b),
+              child: const Text(
+                'Pahe Boy',
+                style: TextStyle(
+                  fontSize: 42,
+                  fontWeight: FontWeight.w900,
+                  color: Colors.white,
+                  letterSpacing: -1,
+                ),
+              ),
+            ),
+            const SizedBox(height: 8),
+            Text(
+              'Loading…',
+              style: TextStyle(
+                color: PaheColors.textMuted,
+                fontSize: 14,
+                fontWeight: FontWeight.w500,
+              ),
+            ),
+            const SizedBox(height: 32),
+            SizedBox(
+              width: 160,
+              child: LinearProgressIndicator(
+                backgroundColor: PaheColors.border,
+                valueColor:
+                    const AlwaysStoppedAnimation<Color>(PaheColors.purple),
+                borderRadius: BorderRadius.circular(4),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
