@@ -417,53 +417,60 @@ void main() {
       );
     }
 
-    test('a page spans exactly 100 episodes, not a rounded-up page count', () {
+    test('a page spans exactly the page size, not a rounded-up page count',
+        () {
       // With a 30-per-page feed the old rounding produced spans of 120 and a
       // dropdown that read "EP 1-120" while holding 30.
       final ranges = stateFor(total: 250).ranges;
-      expect(ranges.length, 3);
-      expect(ranges[0].label, 'EP 1–100');
-      expect(ranges[1].label, 'EP 101–200');
-      expect(ranges[2].label, 'EP 201–250'); // short, not overshooting
+      expect(ranges.length, 5);
+      expect(ranges[0].label, 'EP 1–50');
+      expect(ranges[1].label, 'EP 51–100');
+      expect(ranges.last.label, 'EP 201–250'); // short, not overshooting
+    });
+
+    test('the last page is short rather than overshooting the series', () {
+      final ranges = stateFor(total: 60).ranges;
+      expect(ranges.length, 2);
+      expect(ranges.last.label, 'EP 51–60');
     });
 
     test('derives which API pages hold a range', () {
-      final r = stateFor(total: 250).ranges[1]; // EP 101-200, 30 per page
-      expect(r.firstPage, 4); // episodes 91-120
-      expect(r.lastPage, 7); // episodes 181-210
+      final r = stateFor(total: 250).ranges[1]; // EP 51-100, 30 per page
+      expect(r.firstPage, 2); // episodes 31-60
+      expect(r.lastPage, 4); // episodes 91-120
     });
 
     test('a series inside one page offers no dropdown', () {
       expect(stateFor(total: 12).ranges, isEmpty);
-      expect(stateFor(total: 100).ranges, isEmpty);
+      expect(stateFor(total: 50).ranges, isEmpty);
     });
 
     test('only the selected range is shown, not a straddling API page', () {
-      // Page 4 carries episodes 91-120, so the first range must not show the
-      // 101-120 tail under a heading that stops at 100.
+      // Page 2 carries episodes 31-60, so the first range must not show the
+      // 51-60 tail under a heading that stops at 50.
       final base = stateFor(total: 250);
       final state = base.copyWith(selected: base.ranges.first);
       expect(state.visibleEpisodes.first.number, 1);
-      expect(state.visibleEpisodes.last.number, 100);
-      expect(state.visibleEpisodes.length, 100);
+      expect(state.visibleEpisodes.last.number, 50);
+      expect(state.visibleEpisodes.length, 50);
     });
 
     test('splits a page into fixed blocks of 25', () {
       final base = stateFor(total: 250);
       final state = base.copyWith(selected: base.ranges.first);
       final chunks = state.downloadChunks;
-      expect(chunks.length, 4);
+      expect(chunks.length, 2);
       expect(chunks.first.first.number, 1);
       expect(chunks.first.last.number, 25);
-      expect(chunks.last.first.number, 76);
-      expect(chunks.last.last.number, 100);
+      expect(chunks.last.first.number, 26);
+      expect(chunks.last.last.number, 50);
     });
 
-    test('a 50-episode page gives two blocks, the size staying at 25', () {
-      final base = stateFor(total: 50);
-      final chunks = base.downloadChunks;
-      expect(chunks.length, 2);
-      expect(chunks.map((c) => c.length), [25, 25]);
+    test('the block size stays at 25 whatever the page holds', () {
+      final base = stateFor(total: 250);
+      final second = base.copyWith(selected: base.ranges[1]); // EP 51-100
+      expect(second.downloadChunks.map((c) => c.length), [25, 25]);
+      expect(second.downloadChunks.first.first.number, 51);
     });
 
     test('a short last block is not padded out', () {

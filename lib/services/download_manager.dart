@@ -60,6 +60,8 @@ class DownloadManager extends ChangeNotifier {
     String animeSession = '',
     String episodeSession = '',
     String episodeTitle = '',
+    String batchId = '',
+    String batchLabel = '',
     int totalEpisodes = 0,
   }) {
     final id = '${animeTitle}_${episodeNumber}_${quality}_$audio';
@@ -77,6 +79,8 @@ class DownloadManager extends ChangeNotifier {
       kwikUrl: kwikUrl,
       animeSession: animeSession,
       episodeSession: episodeSession,
+      batchId: batchId,
+      batchLabel: batchLabel,
     );
     queue.add(item);
     notifyListeners();
@@ -97,6 +101,15 @@ class DownloadManager extends ChangeNotifier {
     required String audio,
     int totalEpisodes = 0,
   }) {
+    if (episodes.isEmpty) return;
+    final first = episodes.first.number;
+    final last = episodes.last.number;
+    // Tagged so the whole block can be cancelled in one action instead of
+    // clicking through twenty-five rows.
+    final batchId = '$animeSession|$first-$last|$quality|$audio'
+        '|${DateTime.now().millisecondsSinceEpoch}';
+    final batchLabel = 'EP $first–$last · $quality $audio';
+
     for (final e in episodes) {
       enqueue(
         animeTitle: animeTitle,
@@ -108,8 +121,37 @@ class DownloadManager extends ChangeNotifier {
         quality: quality,
         audio: audio,
         kwikUrl: '',
+        batchId: batchId,
+        batchLabel: batchLabel,
       );
     }
+  }
+
+  /// Cancels every item queued by one action.
+  void cancelBatch(String batchId) {
+    if (batchId.isEmpty) return;
+    for (final item in queue.where((i) => i.batchId == batchId && i.isActive)) {
+      cancel(item);
+    }
+    notifyListeners();
+  }
+
+  /// Cancels everything still in flight.
+  void cancelAll() {
+    for (final item in queue.where((i) => i.isActive)) {
+      cancel(item);
+    }
+    notifyListeners();
+  }
+
+  /// Active items grouped by the action that queued them, newest group last.
+  /// Singles are grouped under an empty key.
+  Map<String, List<DownloadItem>> get activeByBatch {
+    final out = <String, List<DownloadItem>>{};
+    for (final item in queue.where((i) => i.isActive)) {
+      out.putIfAbsent(item.batchId, () => []).add(item);
+    }
+    return out;
   }
 
   /// Finds this item's download link, at the moment it is needed.

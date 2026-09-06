@@ -107,7 +107,12 @@ class EpisodesState {
   }
 
   /// Episodes per selectable page.
-  static const pageSize = 100;
+  ///
+  /// Fifty rather than a hundred: a hundred needs four API pages of the
+  /// 30-per-page feed, and fetching four in a row was answered with 429 part
+  /// of the way through, leaving the page half-filled. Two pages fill
+  /// reliably, and fifty is still a comfortable jump for a long series.
+  static const pageSize = 50;
 
   /// Exactly [pageSize] episodes per range — 1-100, 101-200, and so on.
   ///

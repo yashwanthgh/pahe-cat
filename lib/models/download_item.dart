@@ -16,6 +16,14 @@ class DownloadItem extends ChangeNotifier {
   /// that expired.
   final String kwikUrl;
 
+  /// Groups the items queued by one action, so a whole block can be cancelled
+  /// without picking its episodes out one at a time. Empty for a single
+  /// download.
+  final String batchId;
+
+  /// A label for that group, e.g. "EP 0001–0025".
+  final String batchLabel;
+
   /// Identify the episode on animepahe, so a queued item can look its own
   /// download link up when it reaches the front of the queue.
   ///
@@ -47,6 +55,8 @@ class DownloadItem extends ChangeNotifier {
     this.kwikUrl = '',
     this.animeSession = '',
     this.episodeSession = '',
+    this.batchId = '',
+    this.batchLabel = '',
     this.episodeTitle = '',
     this.totalEpisodes = 0,
     this.outputPath = '',

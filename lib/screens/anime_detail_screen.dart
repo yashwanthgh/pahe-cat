@@ -267,7 +267,15 @@ class _WideLayout extends ConsumerWidget {
           children: [
             SizedBox(
               width: _paneWidth,
-              child: _PosterPane(anime: anime, parts: parts),
+              // The panel sits outside the scroll view: while a batch runs it
+              // is the thing being watched, and having to scroll the poster
+              // pane to find it defeated the purpose.
+              child: Column(
+                children: [
+                  Expanded(child: _PosterPane(anime: anime, parts: parts)),
+                  const _DownloadsPanel(),
+                ],
+              ),
             ),
             const VerticalDivider(width: 1, color: PaheColors.border),
             Expanded(
@@ -712,6 +720,10 @@ class _DownloadsPanel extends StatefulWidget {
 class _DownloadsPanelState extends State<_DownloadsPanel> {
   final _manager = DownloadManager();
 
+  /// Collapsed by default: one line is enough to know something is happening,
+  /// and a queued block of twenty-five would otherwise fill the pane.
+  bool _expanded = false;
+
   @override
   void initState() {
     super.initState();
@@ -730,35 +742,193 @@ class _DownloadsPanelState extends State<_DownloadsPanel> {
 
   @override
   Widget build(BuildContext context) {
+    final groups = _manager.activeByBatch;
     final active = _manager.queue.where((i) => i.isActive).toList();
-    if (active.isEmpty) return const SizedBox.shrink();
+    final total = active.length;
+    if (total == 0) return const SizedBox.shrink();
+
+    // Overall progress across everything queued, so one bar answers "how far
+    // along is this" without expanding.
+    final overall =
+        active.fold<double>(0, (sum, i) => sum + i.progress) / total;
+    final running = active
+        .where((i) => i.status == DownloadStatus.downloading)
+        .length;
+
+    return DecoratedBox(
+      decoration: const BoxDecoration(
+        color: PaheColors.surface,
+        border: Border(top: BorderSide(color: PaheColors.border)),
+      ),
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(16, 10, 8, 12),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                const Icon(Icons.download_rounded,
+                    size: 15, color: PaheColors.accent),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Text(
+                    running > 0
+                        ? '$total downloading'
+                        : '$total waiting to download',
+                    style: const TextStyle(
+                      color: PaheColors.textPrimary,
+                      fontSize: 12,
+                      fontWeight: FontWeight.w700,
+                    ),
+                  ),
+                ),
+                IconButton(
+                  icon: Icon(
+                    _expanded
+                        ? Icons.expand_more_rounded
+                        : Icons.expand_less_rounded,
+                    size: 18,
+                    color: PaheColors.textMuted,
+                  ),
+                  visualDensity: VisualDensity.compact,
+                  padding: EdgeInsets.zero,
+                  constraints: const BoxConstraints(),
+                  tooltip: _expanded ? 'Hide details' : 'Show details',
+                  onPressed: () => setState(() => _expanded = !_expanded),
+                ),
+                const SizedBox(width: 4),
+                TextButton(
+                  style: TextButton.styleFrom(
+                    padding: EdgeInsets.zero,
+                    minimumSize: const Size(0, 24),
+                    tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                  ),
+                  onPressed: () => _confirmCancelAll(context, total),
+                  child: const Text(
+                    'Cancel all',
+                    style: TextStyle(fontSize: 10, color: PaheColors.red),
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 7),
+            ClipRRect(
+              borderRadius: BorderRadius.circular(3),
+              child: LinearProgressIndicator(
+                value: overall,
+                minHeight: 4,
+                backgroundColor: PaheColors.cardHover,
+                valueColor:
+                    const AlwaysStoppedAnimation<Color>(PaheColors.accent),
+              ),
+            ),
+            if (_expanded) ...[
+              const SizedBox(height: 10),
+              // Bounded, so a hundred queued episodes cannot grow the panel
+              // over the whole pane.
+              ConstrainedBox(
+                constraints: const BoxConstraints(maxHeight: 260),
+                child: SingleChildScrollView(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      for (final entry in groups.entries)
+                        _BatchGroup(batchId: entry.key, items: entry.value),
+                    ],
+                  ),
+                ),
+              ),
+            ],
+          ],
+        ),
+      ),
+    );
+  }
+
+  Future<void> _confirmCancelAll(BuildContext context, int count) async {
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (c) => AlertDialog(
+        backgroundColor: PaheColors.card,
+        title: const Text('Cancel all downloads?',
+            style: TextStyle(color: PaheColors.textPrimary, fontSize: 16)),
+        content: Text(
+          '$count download${count == 1 ? '' : 's'} will stop. Part-downloaded '
+          'files are kept, so retrying resumes rather than starting over.',
+          style: const TextStyle(color: PaheColors.textMuted, fontSize: 12),
+        ),
+        actions: [
+          TextButton(
+              onPressed: () => Navigator.pop(c, false),
+              child: const Text('Keep going')),
+          TextButton(
+            onPressed: () => Navigator.pop(c, true),
+            child: const Text('Cancel all',
+                style: TextStyle(color: PaheColors.red)),
+          ),
+        ],
+      ),
+    );
+    if (ok == true) DownloadManager().cancelAll();
+  }
+}
+
+/// One block of downloads, with its own cancel.
+class _BatchGroup extends StatelessWidget {
+  final String batchId;
+  final List<DownloadItem> items;
+
+  const _BatchGroup({required this.batchId, required this.items});
+
+  /// Only the first few rows are drawn, so a queued block of twenty-five does
+  /// not push the poster off the top of the pane.
+  static const _visibleRows = 3;
+
+  @override
+  Widget build(BuildContext context) {
+    final label = items.first.batchLabel;
+    final hidden = items.length - _visibleRows;
 
     return Padding(
-      padding: const EdgeInsets.only(top: 18),
+      padding: const EdgeInsets.only(bottom: 8),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Text(
-            'DOWNLOADING (${active.length})',
-            style: const TextStyle(
-              color: PaheColors.textMuted,
-              fontSize: 10,
-              fontWeight: FontWeight.w800,
-              letterSpacing: 1,
+          if (label.isNotEmpty)
+            Row(
+              children: [
+                Expanded(
+                  child: Text(
+                    '$label · ${items.length} left',
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(
+                      color: PaheColors.textSecondary,
+                      fontSize: 10,
+                      fontWeight: FontWeight.w700,
+                    ),
+                  ),
+                ),
+                // Cancels this block only.
+                IconButton(
+                  icon: const Icon(Icons.close_rounded,
+                      size: 13, color: PaheColors.textMuted),
+                  visualDensity: VisualDensity.compact,
+                  padding: EdgeInsets.zero,
+                  constraints: const BoxConstraints(),
+                  tooltip: 'Cancel this block',
+                  onPressed: () => DownloadManager().cancelBatch(batchId),
+                ),
+              ],
             ),
-          ),
-          const SizedBox(height: 8),
-          // Only the first few, so a queued season does not push the poster
-          // off the top of the pane.
-          for (final item in active.take(4)) _DownloadRow(item: item),
-          if (active.length > 4)
-            Padding(
-              padding: const EdgeInsets.only(top: 6),
-              child: Text(
-                '+${active.length - 4} more in the queue',
-                style: const TextStyle(
-                    color: PaheColors.textMuted, fontSize: 10),
-              ),
+          const SizedBox(height: 4),
+          for (final item in items.take(_visibleRows))
+            _DownloadRow(item: item),
+          if (hidden > 0)
+            Text(
+              '+$hidden more waiting',
+              style:
+                  const TextStyle(color: PaheColors.textMuted, fontSize: 10),
             ),
         ],
       ),
@@ -873,8 +1043,10 @@ class _EpisodeGridState extends ConsumerState<_EpisodeGrid> {
 
     return LayoutBuilder(
       builder: (context, box) {
-        // Roughly 132px per tile, so the column count follows the window.
-        final columns = (box.maxWidth / 132).floor().clamp(2, 10);
+        // Roughly 168px per tile, so the column count follows the window.
+        // Tiles were small enough that the episode number and the badges
+        // crowded each other.
+        final columns = (box.maxWidth / 168).floor().clamp(2, 8);
         return CustomScrollView(
           controller: _scroll,
           slivers: [
@@ -883,9 +1055,9 @@ class _EpisodeGridState extends ConsumerState<_EpisodeGrid> {
               sliver: SliverGrid(
                 gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
                   crossAxisCount: columns,
-                  mainAxisSpacing: 8,
-                  crossAxisSpacing: 8,
-                  mainAxisExtent: 70,
+                  mainAxisSpacing: 10,
+                  crossAxisSpacing: 10,
+                  mainAxisExtent: 88,
                 ),
                 delegate: SliverChildBuilderDelegate(
                   (ctx, i) {
@@ -984,7 +1156,7 @@ class _EpisodeCell extends StatelessWidget {
               width: isCurrent ? 2 : 1,
             ),
           ),
-          padding: const EdgeInsets.fromLTRB(10, 7, 10, 6),
+          padding: const EdgeInsets.fromLTRB(12, 9, 12, 8),
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
@@ -994,20 +1166,20 @@ class _EpisodeCell extends StatelessWidget {
                     'EP ${episode.number}',
                     style: const TextStyle(
                       color: PaheColors.textPrimary,
-                      fontSize: 13,
+                      fontSize: 15,
                       fontWeight: FontWeight.w800,
                     ),
                   ),
                   const Spacer(),
                   if (_finished)
                     const Icon(Icons.check_circle_rounded,
-                        size: 14, color: PaheColors.green)
+                        size: 16, color: PaheColors.green)
                   else if (_started)
                     Text(
                       '${(position * 100).round()}%',
                       style: const TextStyle(
                         color: PaheColors.textSecondary,
-                        fontSize: 9,
+                        fontSize: 10,
                         fontWeight: FontWeight.w800,
                       ),
                     ),
@@ -1021,7 +1193,7 @@ class _EpisodeCell extends StatelessWidget {
                     style: TextStyle(
                       color:
                           episode.isDub ? PaheColors.accent2 : PaheColors.info,
-                      fontSize: 9,
+                      fontSize: 10,
                       fontWeight: FontWeight.w800,
                     ),
                   ),
@@ -1030,14 +1202,14 @@ class _EpisodeCell extends StatelessWidget {
                     isCurrent
                         ? Icons.play_circle_fill_rounded
                         : Icons.play_arrow_rounded,
-                    size: isCurrent ? 17 : 15,
+                    size: isCurrent ? 20 : 18,
                     color: isCurrent
                         ? PaheColors.accent
                         : PaheColors.textMuted,
                   ),
                 ],
               ),
-              const SizedBox(height: 5),
+              const SizedBox(height: 7),
               // A hairline rather than a full bar: at this size a thick bar
               // crowds the two lines of text above it.
               ClipRRect(
