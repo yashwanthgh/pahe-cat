@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:io';
 import 'package:dio/dio.dart';
 import 'package:flutter/foundation.dart';
+import 'package:path_provider/path_provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import '../models/download_item.dart';
 import '../models/stream_source.dart';
@@ -234,6 +235,34 @@ class DownloadManager extends ChangeNotifier {
     item.sourceUrl = await resolve(pick.downloadUrl);
   }
 
+  /// Creates the series folder, falling back if the chosen root is refused.
+  ///
+  /// A sandboxed macOS build cannot create a folder in the user's Downloads
+  /// without an entitlement, and a folder typed into Settings can be
+  /// unwritable for any number of reasons. Failing the download over that
+  /// loses the work already done resolving the link, so a location that does
+  /// work is used and said so.
+  Future<Directory> _prepareDir(DownloadItem item) async {
+    final name = _sanitize(item.animeTitle);
+    for (final root in [await saveRoot, await _fallbackRoot()]) {
+      try {
+        final dir = Directory('$root/$name');
+        await dir.create(recursive: true);
+        return dir;
+      } on FileSystemException catch (e) {
+        debugPrint('DOWNLOAD: cannot use $root -> ${e.osError?.message}');
+        item.update(
+          statusMessage: 'Saving somewhere else — $root is not writable',
+        );
+      }
+    }
+    throw FileSystemException('No writable download folder', await saveRoot);
+  }
+
+  /// Always writable: the app's own container.
+  Future<String> _fallbackRoot() async =>
+      '${(await getApplicationDocumentsDirectory()).path}/Pahe Cat';
+
   Future<void> _process(DownloadItem item) async {
     await _semaphore.acquire();
     IOSink? sink;
@@ -250,9 +279,7 @@ class DownloadManager extends ChangeNotifier {
         statusMessage: 'Starting…',
       );
 
-      final root = await saveRoot;
-      final dir = Directory('$root/${_sanitize(item.animeTitle)}');
-      await dir.create(recursive: true);
+      final dir = await _prepareDir(item);
 
       final outPath = '${dir.path}/${buildFileName(item)}';
       item.outputPath = outPath;

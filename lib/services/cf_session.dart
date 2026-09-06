@@ -222,6 +222,8 @@ const String kPageShadeScript = r'''
 
   // Raise the challenge widget above the cover. Each ancestor needs its own
   // stacking context, otherwise a z-index further down is clamped by a parent.
+  var lifted = [];
+
   function lift() {
     var f = document.querySelector(
       'iframe[src*="challenges.cloudflare.com"], .cf-turnstile');
@@ -231,7 +233,25 @@ const String kPageShadeScript = r'''
       el.style.setProperty('z-index', '2147483600', 'important');
       el.style.setProperty('background', BG, 'important');
       el.style.setProperty('visibility', 'visible', 'important');
+      if (lifted.indexOf(el) < 0) lifted.push(el);
     }
+  }
+
+  // Put the page back exactly as it was. Forcing position:relative on the
+  // challenge's ancestors is what a cover needs, but leaving it in place
+  // pulled the widget out of the middle of the page and into the corner once
+  // the cover was gone.
+  function unlift() {
+    for (var i = 0; i < lifted.length; i++) {
+      var el = lifted[i];
+      el.style.removeProperty('position');
+      el.style.removeProperty('z-index');
+      el.style.removeProperty('background');
+      el.style.removeProperty('visibility');
+    }
+    lifted = [];
+    var st = document.getElementById('pc-style');
+    if (st) st.remove();
   }
 
   function apply() {
@@ -241,6 +261,7 @@ const String kPageShadeScript = r'''
     if (window.__pcNoShade) {
       var existing = document.getElementById('pc-shade');
       if (existing) existing.remove();
+      unlift();
       return;
     }
     style(); shade(); lift();

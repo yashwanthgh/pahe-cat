@@ -6,5 +6,13 @@
 	<true/>
 	<key>com.apple.security.network.client</key>
 	<true/>
+	<!-- Downloads land in the user's real Downloads folder, which a sandboxed
+	     app cannot create a subfolder in without this: the attempt failed with
+	     "Operation not permitted". user-selected covers a folder chosen in
+	     Settings instead. -->
+	<key>com.apple.security.files.downloads.read-write</key>
+	<true/>
+	<key>com.apple.security.files.user-selected.read-write</key>
+	<true/>
 </dict>
 </plist>
