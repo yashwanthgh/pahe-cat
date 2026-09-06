@@ -199,6 +199,7 @@ class _EpisodePlayerScreenState extends ConsumerState<EpisodePlayerScreen> {
         kwikUrl: src.downloadUrl,
         resolvedUrl: resolved.url,
         refererUrl: resolved.referer,
+        kwikPageUrl: resolved.page,
       );
       _toast('Added EP ${widget.episode.number} to downloads');
     } catch (e) {

@@ -46,8 +46,8 @@ class DownloadManager extends ChangeNotifier {
   ///
   /// Injected because resolution needs a WebView, which needs a widget tree —
   /// something a plain service has no business holding. Set once at startup.
-  Future<({String url, String referer})> Function(String downloadPageUrl)?
-      resolver;
+  Future<({String url, String referer, String page})> Function(
+      String downloadPageUrl)? resolver;
 
   /// Supplies the overlay the transfer's WebView is mounted into.
   ///
@@ -63,6 +63,7 @@ class DownloadManager extends ChangeNotifier {
     required String kwikUrl,
     String resolvedUrl = '',
     String refererUrl = '',
+    String kwikPageUrl = '',
     String animeSession = '',
     String episodeSession = '',
     String episodeTitle = '',
@@ -83,6 +84,7 @@ class DownloadManager extends ChangeNotifier {
       audio: audio,
       sourceUrl: resolvedUrl,
       refererUrl: refererUrl,
+      kwikPageUrl: kwikPageUrl,
       kwikUrl: kwikUrl,
       animeSession: animeSession,
       episodeSession: episodeSession,
@@ -215,7 +217,8 @@ class DownloadManager extends ChangeNotifier {
 
   Future<void> _resolveOne(
     DownloadItem item,
-    Future<({String url, String referer})> Function(String) resolve,
+    Future<({String url, String referer, String page})> Function(String)
+        resolve,
   ) async {
     final sources = await AnimePaheApi()
         .getSources(item.animeSession, item.episodeSession);
@@ -243,21 +246,37 @@ class DownloadManager extends ChangeNotifier {
     final resolved = await resolve(pick.downloadUrl);
     item.sourceUrl = resolved.url;
     item.refererUrl = resolved.referer;
+    item.kwikPageUrl = resolved.page;
   }
 
 
-  /// Finishes the download in the system browser.
+  /// True once the media host has refused a transfer, so the rest of a batch
+  /// does not spend ten seconds each rediscovering it.
+  static bool _transferBlocked = false;
+
+  /// Hands the download to the system browser.
   ///
-  /// Not a workaround so much as the only route the media host allows. Its
-  /// Cloudflare firewall answers 403 with "Attention Required!" to every
-  /// request that is not a page navigation, and Sec-Fetch-Mode — the header
-  /// that distinguishes one — is set by the browser and cannot be forged. A
-  /// real browser navigation is accepted, so the resolved link is handed over
-  /// and the file lands in the system's own downloads folder.
+  /// The *entry* link is handed over, not the resolved file URL. That
+  /// distinction is the whole thing: the resolved URL is bound to the session
+  /// that submitted kwik's form, so opening it in a browser that has no such
+  /// session is refused by Cloudflare with "Sorry, you have been blocked" —
+  /// which is what happened. Given the entry link the browser establishes its
+  /// own session, and its own Download button works.
+  ///
+  /// This is the only route left. The plugin's download delegate cancels every
+  /// download and reports the URL rather than the bytes, and no request the app
+  /// can make is accepted by the host's firewall.
   Future<void> _handToBrowser(DownloadItem item, Object reason) async {
     debugPrint('DOWNLOAD: handing ${item.episodeNumber} to the browser'
         ' ($reason)');
-    final uri = Uri.tryParse(item.sourceUrl);
+    // kwik's download page for preference: it has the Download button on it
+    // and skips the redirector's countdown and robot check, which the app has
+    // already been through. The redirector is the fallback when resolution
+    // never got that far.
+    final entry = item.kwikPageUrl.isNotEmpty
+        ? item.kwikPageUrl
+        : (item.kwikUrl.isNotEmpty ? item.kwikUrl : item.sourceUrl);
+    final uri = Uri.tryParse(entry);
     if (uri == null) {
       item.update(
         status: DownloadStatus.failed,
@@ -271,7 +290,7 @@ class DownloadManager extends ChangeNotifier {
         status: ok ? DownloadStatus.openedExternally : DownloadStatus.failed,
         progress: ok ? 1.0 : 0.0,
         statusMessage: ok
-            ? 'Downloading in your browser'
+            ? 'Opened in your browser — press Download there'
             : 'No browser available to open this',
       );
     } catch (e) {
@@ -319,6 +338,15 @@ class DownloadManager extends ChangeNotifier {
       if (item.needsResolving) {
         await _resolve(item);
         if (item.cancelToken.isCancelled) return;
+      }
+
+      // Resolution still runs even when the host is known to refuse
+      // transfers, because it is what finds kwik's own download page — and
+      // handing the browser that page costs one click, where handing it the
+      // redirector costs a countdown, a robot check and then the click.
+      if (_transferBlocked) {
+        await _handToBrowser(item, 'host refuses in-app transfers');
+        return;
       }
 
       item.update(
@@ -386,8 +414,9 @@ class DownloadManager extends ChangeNotifier {
       try {
         await transfer();
       } on DownloadRefused catch (e) {
-        // The CDN's firewall refuses anything that is not a page navigation.
-        // The browser can make one; this app cannot.
+        // The host's firewall refuses the app outright; remember it so the
+        // rest of a batch does not repeat the discovery.
+        _transferBlocked = true;
         await sink?.close();
         sink = null;
         if (await partial.exists()) await partial.delete();

@@ -50,6 +50,10 @@ class DownloadItem extends ChangeNotifier {
   /// The direct file URL. Cleared on retry so it gets resolved again.
   String sourceUrl;
 
+  /// kwik's download page, past the redirector's countdown and robot check.
+  /// Where a browser hand-off starts.
+  String kwikPageUrl;
+
   /// The page [sourceUrl] came from, sent as the Referer.
   ///
   /// The file is served by kwik's CDN, which answers 403 to a request
@@ -82,6 +86,7 @@ class DownloadItem extends ChangeNotifier {
     this.totalEpisodes = 0,
     this.outputPath = '',
     this.refererUrl = '',
+    this.kwikPageUrl = '',
   });
 
   DownloadStatus get status => _status;

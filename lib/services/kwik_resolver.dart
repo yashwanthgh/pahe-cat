@@ -43,9 +43,10 @@ class KwikResolver {
   /// The referer matters: the file is served by kwik's CDN, which refuses a
   /// request that presents animepahe's referer and cookies instead of its
   /// own.
-  static Future<({String url, String referer})> resolve(
+  static Future<({String url, String referer, String page})> resolve(
       OverlayState overlay, String kwikUrl) async {
-    final completer = Completer<({String url, String referer})>();
+    final completer =
+        Completer<({String url, String referer, String page})>();
     late OverlayEntry entry;
 
     entry = OverlayEntry(
@@ -75,7 +76,7 @@ class KwikResolver {
 
 class _KwikWebView extends StatefulWidget {
   final String kwikUrl;
-  final ValueChanged<({String url, String referer})> onResolved;
+  final ValueChanged<({String url, String referer, String page})> onResolved;
   final ValueChanged<Object> onError;
 
   const _KwikWebView({
@@ -120,12 +121,20 @@ class _KwikWebViewState extends State<_KwikWebView> {
   /// The page the WebView is on, which becomes the referer for the file.
   String _pageUrl = '';
 
+  /// kwik's own download page, past the ad gate.
+  ///
+  /// Reported so a browser hand-off can start here rather than at the
+  /// redirector: this page has the Download button on it, with none of the
+  /// countdown or the are-you-a-robot step the redirector imposes.
+  String _kwikPage = '';
+
   void _finish(String url, String how) {
     if (_done) return;
     _done = true;
     _poll?.cancel();
     debugPrint('KWIK: resolved via $how -> $url (referer $_pageUrl)');
-    widget.onResolved((url: url, referer: _pageUrl));
+    widget.onResolved(
+        (url: url, referer: _pageUrl, page: _kwikPage));
   }
 
   /// Hosts this flow is allowed to visit.
@@ -160,6 +169,7 @@ class _KwikWebViewState extends State<_KwikWebView> {
       final url = r?.toString().trim() ?? '';
       if (url.isEmpty || url == 'null') return;
       debugPrint('KWIK: jumping to $url');
+      _kwikPage = url;
       await c.loadUrl(urlRequest: URLRequest(url: WebUri(url)));
     } catch (e) {
       debugPrint('KWIK: jump threw $e');
