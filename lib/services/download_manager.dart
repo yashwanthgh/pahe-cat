@@ -49,7 +49,8 @@ class DownloadManager extends ChangeNotifier {
   ///
   /// Injected because resolution needs a WebView, which needs a widget tree —
   /// something a plain service has no business holding. Set once at startup.
-  Future<String> Function(String downloadPageUrl)? resolver;
+  Future<({String url, String referer})> Function(String downloadPageUrl)?
+      resolver;
 
   void enqueue({
     required String animeTitle,
@@ -58,6 +59,7 @@ class DownloadManager extends ChangeNotifier {
     required String audio,
     required String kwikUrl,
     String resolvedUrl = '',
+    String refererUrl = '',
     String animeSession = '',
     String episodeSession = '',
     String episodeTitle = '',
@@ -77,6 +79,7 @@ class DownloadManager extends ChangeNotifier {
       quality: quality,
       audio: audio,
       sourceUrl: resolvedUrl,
+      refererUrl: refererUrl,
       kwikUrl: kwikUrl,
       animeSession: animeSession,
       episodeSession: episodeSession,
@@ -208,7 +211,9 @@ class DownloadManager extends ChangeNotifier {
   }
 
   Future<void> _resolveOne(
-      DownloadItem item, Future<String> Function(String) resolve) async {
+    DownloadItem item,
+    Future<({String url, String referer})> Function(String) resolve,
+  ) async {
     final sources = await AnimePaheApi()
         .getSources(item.animeSession, item.episodeSession);
 
@@ -232,7 +237,9 @@ class DownloadManager extends ChangeNotifier {
       throw Exception('animepahe lists no download for EP ${item.episodeNumber}');
     }
 
-    item.sourceUrl = await resolve(pick.downloadUrl);
+    final resolved = await resolve(pick.downloadUrl);
+    item.sourceUrl = resolved.url;
+    item.refererUrl = resolved.referer;
   }
 
   /// Creates the series folder, falling back if the chosen root is refused.
@@ -304,7 +311,9 @@ class DownloadManager extends ChangeNotifier {
           responseType: ResponseType.stream,
           followRedirects: true,
           headers: {
-            ...CfSession().dioHeaders,
+            // Built for the file's own host, not animepahe's: see fileHeaders.
+            ...await CfSession()
+                .fileHeaders(item.sourceUrl, referer: item.refererUrl),
             if (startByte > 0) 'Range': 'bytes=$startByte-',
           },
         ),

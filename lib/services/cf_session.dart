@@ -78,6 +78,42 @@ class CfSession {
         if (_cookieHeader.isNotEmpty) 'Cookie': _cookieHeader,
       };
 
+  /// Headers for fetching a file outside the WebView.
+  ///
+  /// [dioHeaders] carries animepahe's referer and cookies, which is wrong for
+  /// a media file: those are served from kwik's own CDN, and it answered 403
+  /// to a request presenting another site's credentials. The cookies for the
+  /// hosts actually involved are collected instead, and the referer is the
+  /// page the link came from.
+  Future<Map<String, String>> fileHeaders(String url,
+      {String referer = ''}) async {
+    final cookies = <String>[];
+    final seen = <String>{};
+    try {
+      final jar = CookieManager.instance();
+      for (final origin in [url, referer, 'https://kwik.cx/']) {
+        if (origin.isEmpty) continue;
+        try {
+          for (final c in await jar.getCookies(url: WebUri(origin))) {
+            if (seen.add(c.name)) cookies.add('${c.name}=${c.value}');
+          }
+        } catch (_) {
+          // A host with no cookies is not a problem.
+        }
+      }
+    } catch (_) {
+      // No cookie manager — send what we can.
+    }
+
+    return {
+      'User-Agent': userAgent,
+      'Accept': '*/*',
+      'Accept-Language': 'en-US,en;q=0.9',
+      if (referer.isNotEmpty) 'Referer': referer,
+      if (cookies.isNotEmpty) 'Cookie': cookies.join('; '),
+    };
+  }
+
   Future<void> attach(InAppWebViewController c) async {
     _controller = c;
     _uaFromWebView = await _readUserAgent(c);

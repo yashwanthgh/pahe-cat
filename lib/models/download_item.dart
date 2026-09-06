@@ -34,6 +34,12 @@ class DownloadItem extends ChangeNotifier {
 
   /// The direct file URL. Cleared on retry so it gets resolved again.
   String sourceUrl;
+
+  /// The page [sourceUrl] came from, sent as the Referer.
+  ///
+  /// The file is served by kwik's CDN, which answers 403 to a request
+  /// presenting animepahe's referer and cookies instead of its own.
+  String refererUrl;
   String outputPath;
 
   /// Recreated on retry — a cancelled token stays cancelled forever.
@@ -60,6 +66,7 @@ class DownloadItem extends ChangeNotifier {
     this.episodeTitle = '',
     this.totalEpisodes = 0,
     this.outputPath = '',
+    this.refererUrl = '',
   });
 
   DownloadStatus get status => _status;

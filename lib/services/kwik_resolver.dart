@@ -38,8 +38,14 @@ class KwikResolver {
   /// descendant — so resolving from a navigator's own context found no overlay
   /// and every download failed with "No Overlay widget found". A NavigatorState
   /// hands out the right one directly through `.overlay`.
-  static Future<String> resolve(OverlayState overlay, String kwikUrl) async {
-    final completer = Completer<String>();
+  /// Returns the media URL and the page it came from.
+  ///
+  /// The referer matters: the file is served by kwik's CDN, which refuses a
+  /// request that presents animepahe's referer and cookies instead of its
+  /// own.
+  static Future<({String url, String referer})> resolve(
+      OverlayState overlay, String kwikUrl) async {
+    final completer = Completer<({String url, String referer})>();
     late OverlayEntry entry;
 
     entry = OverlayEntry(
@@ -69,7 +75,7 @@ class KwikResolver {
 
 class _KwikWebView extends StatefulWidget {
   final String kwikUrl;
-  final ValueChanged<String> onResolved;
+  final ValueChanged<({String url, String referer})> onResolved;
   final ValueChanged<Object> onError;
 
   const _KwikWebView({
@@ -111,12 +117,15 @@ class _KwikWebViewState extends State<_KwikWebView> {
     super.dispose();
   }
 
+  /// The page the WebView is on, which becomes the referer for the file.
+  String _pageUrl = '';
+
   void _finish(String url, String how) {
     if (_done) return;
     _done = true;
     _poll?.cancel();
-    debugPrint('KWIK: resolved via $how -> $url');
-    widget.onResolved(url);
+    debugPrint('KWIK: resolved via $how -> $url (referer $_pageUrl)');
+    widget.onResolved((url: url, referer: _pageUrl));
   }
 
   /// Hosts this flow is allowed to visit.
@@ -431,6 +440,9 @@ class _KwikWebViewState extends State<_KwikWebView> {
     // because they cannot move the page.
     if (action.isForMainFrame) {
       final host = uri?.host ?? '';
+      // Remembered before any redirect, so a cancelled media navigation still
+      // knows which page asked for it.
+      if (host.isNotEmpty && _allowed(host)) _pageUrl = url;
       if (host.isNotEmpty && !_allowed(host)) {
         debugPrint('KWIK: blocked $host');
         return NavigationActionPolicy.CANCEL;
@@ -442,6 +454,7 @@ class _KwikWebViewState extends State<_KwikWebView> {
 
   Future<void> _onLoadStop(InAppWebViewController c, WebUri? url) async {
     debugPrint('KWIK: loaded $url');
+    if (url != null) _pageUrl = url.toString();
     final host = url?.host.toLowerCase() ?? '';
     // The redirector's own page: take the kwik link out of it rather than
     // waiting for scripts that would rather show an advert.
