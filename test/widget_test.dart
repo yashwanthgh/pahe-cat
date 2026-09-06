@@ -1,10 +1,12 @@
 import 'package:flutter_test/flutter_test.dart';
 import 'package:pahe_cat/models/anime.dart';
 import 'package:pahe_cat/models/download_item.dart';
+import 'package:pahe_cat/models/episode.dart';
 import 'package:pahe_cat/models/stream_source.dart';
 import 'package:pahe_cat/models/watch_progress.dart';
 import 'package:pahe_cat/services/animepahe_api.dart';
 import 'package:pahe_cat/services/download_manager.dart';
+import 'package:pahe_cat/services/providers.dart';
 
 DownloadItem _item({
   String anime = 'Test',
@@ -389,6 +391,84 @@ void main() {
       final p = WatchProgress.fromMap(legacy);
       expect(p.resumeEpisode, 0);
       expect(p.continueEpisode, 4);
+    });
+  });
+
+  group('episode pages', () {
+    EpisodesState stateFor({required int total, int perPage = 30}) {
+      return EpisodesState(
+        episodes: [
+          for (var n = 1; n <= total; n++)
+            Episode(
+              session: 's$n',
+              animeSession: 'a',
+              number: n,
+              title: '',
+              snapshot: '',
+              audio: 'jpn',
+              duration: '',
+              fansub: '',
+              createdAt: '',
+            ),
+        ],
+        perPage: perPage,
+        total: total,
+        totalPages: (total / perPage).ceil(),
+      );
+    }
+
+    test('a page spans exactly 100 episodes, not a rounded-up page count', () {
+      // With a 30-per-page feed the old rounding produced spans of 120 and a
+      // dropdown that read "EP 1-120" while holding 30.
+      final ranges = stateFor(total: 250).ranges;
+      expect(ranges.length, 3);
+      expect(ranges[0].label, 'EP 1–100');
+      expect(ranges[1].label, 'EP 101–200');
+      expect(ranges[2].label, 'EP 201–250'); // short, not overshooting
+    });
+
+    test('derives which API pages hold a range', () {
+      final r = stateFor(total: 250).ranges[1]; // EP 101-200, 30 per page
+      expect(r.firstPage, 4); // episodes 91-120
+      expect(r.lastPage, 7); // episodes 181-210
+    });
+
+    test('a series inside one page offers no dropdown', () {
+      expect(stateFor(total: 12).ranges, isEmpty);
+      expect(stateFor(total: 100).ranges, isEmpty);
+    });
+
+    test('only the selected range is shown, not a straddling API page', () {
+      // Page 4 carries episodes 91-120, so the first range must not show the
+      // 101-120 tail under a heading that stops at 100.
+      final base = stateFor(total: 250);
+      final state = base.copyWith(selected: base.ranges.first);
+      expect(state.visibleEpisodes.first.number, 1);
+      expect(state.visibleEpisodes.last.number, 100);
+      expect(state.visibleEpisodes.length, 100);
+    });
+
+    test('splits a page into fixed blocks of 25', () {
+      final base = stateFor(total: 250);
+      final state = base.copyWith(selected: base.ranges.first);
+      final chunks = state.downloadChunks;
+      expect(chunks.length, 4);
+      expect(chunks.first.first.number, 1);
+      expect(chunks.first.last.number, 25);
+      expect(chunks.last.first.number, 76);
+      expect(chunks.last.last.number, 100);
+    });
+
+    test('a 50-episode page gives two blocks, the size staying at 25', () {
+      final base = stateFor(total: 50);
+      final chunks = base.downloadChunks;
+      expect(chunks.length, 2);
+      expect(chunks.map((c) => c.length), [25, 25]);
+    });
+
+    test('a short last block is not padded out', () {
+      final chunks = stateFor(total: 60).downloadChunks;
+      expect(chunks.map((c) => c.length), [25, 25, 10]);
     });
   });
 }

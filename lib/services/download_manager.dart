@@ -17,6 +17,19 @@ class DownloadManager extends ChangeNotifier {
   final List<DownloadItem> queue = [];
   final _semaphore = _Semaphore(2);
 
+  /// Link resolution runs strictly one at a time, even though two files
+  /// transfer at once.
+  ///
+  /// Resolution drives a real WebView and asks animepahe for the episode's
+  /// sources. Queueing a hundred episodes and letting two resolve
+  /// concurrently would put two live web pages on screen at once and fire the
+  /// source lookups in pairs, which is what animepahe answers with 429.
+  /// Transfers are the part worth parallelising; resolution is not.
+  final _resolveLock = _Semaphore(1);
+
+  /// Spacing between resolutions, for the same reason.
+  static const _resolveGap = Duration(milliseconds: 600);
+
   late final Dio _dio = Dio(BaseOptions(
     connectTimeout: const Duration(seconds: 20),
     receiveTimeout: Duration.zero, // streaming — no idle cap
@@ -107,9 +120,23 @@ class DownloadManager extends ChangeNotifier {
     }
     item.update(
       status: DownloadStatus.resolving,
-      statusMessage: 'Finding the file…',
+      statusMessage: 'Waiting to find the file…',
     );
 
+    await _resolveLock.acquire();
+    try {
+      if (item.cancelToken.isCancelled) return;
+      item.update(statusMessage: 'Finding the file…');
+      await _resolveOne(item, resolve);
+    } finally {
+      // Held across the gap so the next item cannot start early.
+      await Future.delayed(_resolveGap);
+      _resolveLock.release();
+    }
+  }
+
+  Future<void> _resolveOne(
+      DownloadItem item, Future<String> Function(String) resolve) async {
     final sources = await AnimePaheApi()
         .getSources(item.animeSession, item.episodeSession);
 

@@ -20,12 +20,16 @@ import 'domain_resolver.dart';
 /// checks the referer and builds the form in JavaScript — so this drives a
 /// real WebView.
 ///
-/// The WebView is given real size and left visible behind the app's own
-/// loading screen rather than parked at 1x1 off-screen. A one-pixel
-/// off-screen view is throttled by the platform: WebKit stops doing rendering
-/// and timer work for something it considers invisible, so the player never
-/// finished initialising and resolution timed out every time. The page's own
-/// content is hidden from inside the page instead, by [kPageShadeScript].
+/// The WebView is given a real, on-screen size rather than being parked at
+/// 1x1 off-screen. A one-pixel off-screen view is throttled by the platform:
+/// WebKit stops doing rendering and timer work for something it considers
+/// invisible, so the page never finished initialising and resolution timed out
+/// every time.
+///
+/// It is deliberately a small corner panel and not full-screen. Filling the
+/// window would blanket the app while a batch resolved one link after another,
+/// and the page's own content is hidden from inside the page anyway by
+/// [kPageShadeScript], so there is nothing to show.
 class KwikResolver {
   /// Resolves [kwikUrl] to a media URL, or throws.
   static Future<String> resolve(BuildContext context, String kwikUrl) async {
@@ -142,10 +146,56 @@ class _KwikWebViewState extends State<_KwikWebView> {
 
   @override
   Widget build(BuildContext context) {
-    // Full size and visible. The app's own loading UI is drawn over the top of
-    // this by the player screen; the page itself is blanked from within.
-    return Positioned.fill(
-      child: InAppWebView(
+    return Positioned(
+      right: 16,
+      bottom: 16,
+      width: 300,
+      height: 190,
+      child: Material(
+        elevation: 6,
+        borderRadius: BorderRadius.circular(12),
+        color: const Color(0xFFFCFBF9),
+        child: ClipRRect(
+          borderRadius: BorderRadius.circular(12),
+          child: Stack(
+            children: [
+              Positioned.fill(child: _webView()),
+              // Says what the panel is, since the page behind it is blanked.
+              const Positioned(
+                left: 12,
+                right: 12,
+                bottom: 10,
+                child: Row(
+                  children: [
+                    SizedBox(
+                      width: 14,
+                      height: 14,
+                      child: CircularProgressIndicator(
+                          strokeWidth: 2, color: Color(0xFF6B615A)),
+                    ),
+                    SizedBox(width: 8),
+                    Expanded(
+                      child: Text(
+                        'Preparing download…',
+                        style: TextStyle(
+                          fontSize: 11,
+                          fontWeight: FontWeight.w700,
+                          color: Color(0xFF7A716A),
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _webView() {
+    return InAppWebView(
         initialUrlRequest: URLRequest(
           url: WebUri(widget.kwikUrl),
           headers: {'Referer': DomainResolver.referer},
@@ -184,7 +234,6 @@ class _KwikWebViewState extends State<_KwikWebView> {
         onReceivedError: (c, req, err) {
           debugPrint('KWIK: error on ${req.url} -> ${err.description}');
         },
-      ),
     );
   }
 }

@@ -6,21 +6,30 @@ import '../services/download_manager.dart';
 import '../services/settings.dart';
 import '../theme.dart';
 
-/// Queues a range of episodes for download in one action.
+/// Queues an arbitrary span of episodes.
 ///
-/// Only episodes already loaded into the list can be picked, which is why the
-/// range picker on the series page matters: it is what pulls a later stretch
-/// of a long series into memory in the first place.
+/// The common case — the fixed blocks of 25 — is offered directly on the
+/// series page, so this exists for the rest: an exact range, or a quality
+/// other than the saved preference.
+///
+/// Only episodes already loaded can be picked, which is what the range
+/// dropdown on the series page is for.
 class BulkDownloadSheet extends ConsumerStatefulWidget {
   final Anime anime;
   final List<Episode> episodes;
   final int totalEpisodes;
+
+  /// Pre-selected span. Defaults to everything loaded.
+  final int? initialFrom;
+  final int? initialTo;
 
   const BulkDownloadSheet({
     super.key,
     required this.anime,
     required this.episodes,
     required this.totalEpisodes,
+    this.initialFrom,
+    this.initialTo,
   });
 
   static Future<void> show(
@@ -28,6 +37,8 @@ class BulkDownloadSheet extends ConsumerStatefulWidget {
     required Anime anime,
     required List<Episode> episodes,
     required int totalEpisodes,
+    int? initialFrom,
+    int? initialTo,
   }) {
     return showModalBottomSheet<void>(
       context: context,
@@ -40,6 +51,8 @@ class BulkDownloadSheet extends ConsumerStatefulWidget {
         anime: anime,
         episodes: episodes,
         totalEpisodes: totalEpisodes,
+        initialFrom: initialFrom,
+        initialTo: initialTo,
       ),
     );
   }
@@ -61,156 +74,177 @@ class _BulkDownloadSheetState extends ConsumerState<BulkDownloadSheet> {
   void initState() {
     super.initState();
     final list = _sorted;
-    _from = list.isEmpty ? 1 : list.first.number;
-    _to = list.isEmpty ? 1 : list.last.number;
+    _from = widget.initialFrom ?? (list.isEmpty ? 1 : list.first.number);
+    _to = widget.initialTo ?? (list.isEmpty ? 1 : list.last.number);
     final s = ref.read(settingsProvider);
     _quality = s.preferredQuality;
     _audio = s.prefersDub ? 'DUB' : 'SUB';
   }
 
-  List<Episode> get _selected => _sorted
-      .where((e) => e.number >= _from && e.number <= _to)
-      .toList();
+  List<Episode> get _selected =>
+      _sorted.where((e) => e.number >= _from && e.number <= _to).toList();
 
   @override
   Widget build(BuildContext context) {
-    final list = _sorted;
-    final numbers = list.map((e) => e.number).toList();
+    final numbers = _sorted.map((e) => e.number).toList();
     final count = _selected.length;
 
     return SafeArea(
-      child: Padding(
-        padding: const EdgeInsets.fromLTRB(20, 16, 20, 20),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            const Text(
-              'Download episodes',
-              style: TextStyle(
-                color: PaheColors.textPrimary,
-                fontSize: 18,
-                fontWeight: FontWeight.w800,
-              ),
-            ),
-            const SizedBox(height: 2),
-            Text(
-              widget.anime.title,
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
-              style: const TextStyle(color: PaheColors.textMuted, fontSize: 12),
-            ),
-            const SizedBox(height: 18),
-
-            if (numbers.isEmpty)
+      child: SingleChildScrollView(
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(20, 16, 20, 20),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
               const Text(
-                'No episodes loaded yet.',
-                style: TextStyle(color: PaheColors.textMuted, fontSize: 13),
-              )
-            else ...[
-              Row(
-                children: [
-                  Expanded(
-                    child: _NumberPicker(
-                      label: 'From',
-                      value: _from,
-                      options: numbers,
-                      onChanged: (v) => setState(() {
-                        _from = v;
-                        if (_to < _from) _to = _from;
-                      }),
-                    ),
-                  ),
-                  const SizedBox(width: 12),
-                  Expanded(
-                    child: _NumberPicker(
-                      label: 'To',
-                      value: _to,
-                      // Never offer an end before the start.
-                      options: numbers.where((n) => n >= _from).toList(),
-                      onChanged: (v) => setState(() => _to = v),
-                    ),
-                  ),
-                ],
-              ),
-              const SizedBox(height: 16),
-              Row(
-                children: [
-                  Expanded(
-                    child: _ChoicePicker(
-                      label: 'Quality',
-                      value: _quality,
-                      options: AppSettings.qualities,
-                      onChanged: (v) => setState(() => _quality = v),
-                    ),
-                  ),
-                  const SizedBox(width: 12),
-                  Expanded(
-                    child: _ChoicePicker(
-                      label: 'Audio',
-                      value: _audio,
-                      options: const ['SUB', 'DUB'],
-                      onChanged: (v) => setState(() => _audio = v),
-                    ),
-                  ),
-                ],
-              ),
-              const SizedBox(height: 10),
-              const Text(
-                'Each episode finds its own link when its turn comes, because '
-                'animepahe download links expire. Two run at a time. If an '
-                'episode has no match for these settings, the nearest one is '
-                'used rather than skipping it.',
+                'Download episodes',
                 style: TextStyle(
-                    color: PaheColors.textMuted, fontSize: 11, height: 1.4),
+                  color: PaheColors.textPrimary,
+                  fontSize: 18,
+                  fontWeight: FontWeight.w800,
+                ),
+              ),
+              const SizedBox(height: 2),
+              Text(
+                widget.anime.title,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style:
+                    const TextStyle(color: PaheColors.textMuted, fontSize: 12),
               ),
               const SizedBox(height: 18),
-              SizedBox(
-                width: double.infinity,
-                child: FilledButton(
-                  style: FilledButton.styleFrom(
-                    backgroundColor: PaheColors.accent,
-                    padding: const EdgeInsets.symmetric(vertical: 14),
-                  ),
-                  onPressed: count == 0 ? null : _queue,
-                  child: Text(
-                    count == 1
-                        ? 'Queue 1 episode'
-                        : 'Queue $count episodes',
-                    style: const TextStyle(
-                      fontSize: 14,
-                      fontWeight: FontWeight.w800,
-                      color: Colors.white,
+              if (numbers.isEmpty)
+                const Text(
+                  'No episodes loaded yet.',
+                  style: TextStyle(color: PaheColors.textMuted, fontSize: 13),
+                )
+              else ...[
+                Row(
+                  children: [
+                    Expanded(
+                      child: _NumberPicker(
+                        label: 'From',
+                        value: _from,
+                        options: numbers,
+                        onChanged: (v) => setState(() {
+                          _from = v;
+                          if (_to < _from) _to = _from;
+                        }),
+                      ),
+                    ),
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: _NumberPicker(
+                        label: 'To',
+                        value: _to,
+                        // Never offer an end before the start.
+                        options: numbers.where((n) => n >= _from).toList(),
+                        onChanged: (v) => setState(() => _to = v),
+                      ),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 16),
+                Row(
+                  children: [
+                    Expanded(
+                      child: _ChoicePicker(
+                        label: 'Quality',
+                        value: _quality,
+                        options: AppSettings.qualities,
+                        onChanged: (v) => setState(() => _quality = v),
+                      ),
+                    ),
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: _ChoicePicker(
+                        label: 'Audio',
+                        value: _audio,
+                        options: const ['SUB', 'DUB'],
+                        onChanged: (v) => setState(() => _audio = v),
+                      ),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 10),
+                const Text(
+                  'Two download at a time, and each finds its own link when '
+                  'its turn comes — animepahe links expire, so resolving a '
+                  'whole batch up front would not work. An episode with no '
+                  'match for these settings uses the nearest instead of being '
+                  'skipped.',
+                  style: TextStyle(
+                      color: PaheColors.textMuted, fontSize: 11, height: 1.4),
+                ),
+                const SizedBox(height: 18),
+                SizedBox(
+                  width: double.infinity,
+                  child: FilledButton(
+                    style: FilledButton.styleFrom(
+                      backgroundColor: PaheColors.accent,
+                      padding: const EdgeInsets.symmetric(vertical: 14),
+                    ),
+                    onPressed: count == 0 ? null : _queue,
+                    child: Text(
+                      count == 1
+                          ? 'Queue EP $_from'
+                          : 'Queue $count episodes (EP $_from–$_to)',
+                      style: const TextStyle(
+                        fontSize: 14,
+                        fontWeight: FontWeight.w800,
+                        color: Colors.white,
+                      ),
                     ),
                   ),
                 ),
-              ),
+              ],
             ],
-          ],
+          ),
         ),
       ),
     );
   }
 
   void _queue() {
-    final chosen = _selected;
-    DownloadManager().enqueueBatch(
-      animeTitle: widget.anime.title,
-      animeSession: widget.anime.session,
-      episodes: chosen
-          .map((e) => (number: e.number, session: e.session, title: e.title))
-          .toList(),
+    queueEpisodes(
+      context,
+      anime: widget.anime,
+      episodes: _selected,
+      totalEpisodes: widget.totalEpisodes,
       quality: _quality,
       audio: _audio,
-      totalEpisodes: widget.totalEpisodes,
     );
     Navigator.pop(context);
-    ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-      content: Text('Queued ${chosen.length} episode'
-          '${chosen.length == 1 ? '' : 's'} — see Downloads'),
-      backgroundColor: PaheColors.accent,
-    ));
   }
+}
+
+/// Queues [episodes] and says so. Shared with the block buttons on the series
+/// page so both paths behave identically.
+void queueEpisodes(
+  BuildContext context, {
+  required Anime anime,
+  required List<Episode> episodes,
+  required int totalEpisodes,
+  required String quality,
+  required String audio,
+}) {
+  if (episodes.isEmpty) return;
+  DownloadManager().enqueueBatch(
+    animeTitle: anime.title,
+    animeSession: anime.session,
+    episodes: episodes
+        .map((e) => (number: e.number, session: e.session, title: e.title))
+        .toList(),
+    quality: quality,
+    audio: audio,
+    totalEpisodes: totalEpisodes,
+  );
+  ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+    content: Text('Queued ${episodes.length} episode'
+        '${episodes.length == 1 ? '' : 's'} · $quality $audio'),
+    backgroundColor: PaheColors.accent,
+  ));
 }
 
 class _NumberPicker extends StatelessWidget {

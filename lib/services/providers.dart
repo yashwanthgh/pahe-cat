@@ -78,29 +78,77 @@ class EpisodesState {
     return loadedPages < r.lastPage;
   }
 
-  /// Roughly 100 episodes per range, rounded to whole API pages since pages
-  /// are the only unit the API can actually be asked for.
+  /// How many episodes the selected range is expected to hold, so filling it
+  /// can be reported as progress rather than a bare spinner.
+  int get expectedInRange {
+    final r = selected;
+    if (r == null) return total;
+    return r.lastEpisode - r.firstEpisode + 1;
+  }
+
+  /// True once the selected range holds everything it should.
+  bool get rangeComplete =>
+      !hasMore && visibleEpisodes.length >= expectedInRange;
+
+  /// Download chunk size. A whole page at once is too much to queue in one
+  /// action, so a page is offered in fixed blocks.
+  static const chunkSize = 25;
+
+  /// The loaded episodes split into blocks of [chunkSize]. A 120-episode page
+  /// gives five blocks, a 50-episode one gives two — the block size is fixed
+  /// and the count follows from how much the page holds.
+  List<List<Episode>> get downloadChunks {
+    final sorted = [...visibleEpisodes]
+      ..sort((a, b) => a.number.compareTo(b.number));
+    return [
+      for (var i = 0; i < sorted.length; i += chunkSize)
+        sorted.sublist(i, math.min(i + chunkSize, sorted.length)),
+    ];
+  }
+
+  /// Episodes per selectable page.
+  static const pageSize = 100;
+
+  /// Exactly [pageSize] episodes per range — 1-100, 101-200, and so on.
+  ///
+  /// Ranges used to be built by rounding up to whole API pages, which gave
+  /// spans of 120 with a 30-per-page feed and a dropdown reading "EP 1-120".
+  /// The boundaries are set in episode numbers now and the API pages needed
+  /// are derived from them, so the label says what it means. The last range is
+  /// short rather than overshooting the series.
   List<EpisodeRange> get ranges {
-    if (totalPages <= 1 || perPage <= 0) return const [];
-    final pagesPerChunk = math.max(1, (100 / perPage).ceil());
-    final chunks = (totalPages / pagesPerChunk).ceil();
-    if (chunks <= 1) return const [];
+    if (perPage <= 0) return const [];
+    final count = total > 0 ? total : episodes.length;
+    if (count <= pageSize) return const [];
+    final chunks = (count / pageSize).ceil();
     return [
       for (var i = 0; i < chunks; i++)
         () {
-          final firstPage = i * pagesPerChunk + 1;
-          final lastPage = math.min((i + 1) * pagesPerChunk, totalPages);
+          final firstEpisode = i * pageSize + 1;
+          final lastEpisode = math.min((i + 1) * pageSize, count);
           return EpisodeRange(
             index: i,
-            firstPage: firstPage,
-            lastPage: lastPage,
-            firstEpisode: (firstPage - 1) * perPage + 1,
-            lastEpisode: total > 0
-                ? math.min(lastPage * perPage, total)
-                : lastPage * perPage,
+            // Which API pages hold those episode numbers.
+            firstPage: ((firstEpisode - 1) ~/ perPage) + 1,
+            lastPage: ((lastEpisode - 1) ~/ perPage) + 1,
+            firstEpisode: firstEpisode,
+            lastEpisode: lastEpisode,
           );
         }(),
     ];
+  }
+
+  /// The episodes to show: those inside the selected range.
+  ///
+  /// An API page can straddle a range boundary — with 30 per page, episodes
+  /// 91-120 arrive together — so the tail is held back rather than shown under
+  /// a heading that excludes it.
+  List<Episode> get visibleEpisodes {
+    final r = selected;
+    if (r == null) return episodes;
+    return episodes
+        .where((e) => e.number >= r.firstEpisode && e.number <= r.lastEpisode)
+        .toList();
   }
 
   EpisodesState copyWith({
@@ -134,15 +182,34 @@ class EpisodesNotifier extends StateNotifier<EpisodesState> {
   final String animeSession;
 
   EpisodesNotifier(this.animeSession) : super(const EpisodesState()) {
-    loadMore();
+    _fill();
   }
 
+  /// Loads every remaining page of the selected range.
+  ///
+  /// The page is filled in one go rather than a page at a time behind a "load
+  /// more" button: the range is labelled with the span it covers, so showing
+  /// only the first 30 of it made the label untrue and left the reader
+  /// clicking to reach episode 40. Pages are still fetched one at a time with
+  /// a gap, because a burst is answered with 429.
+  Future<void> _fill() async {
+    while (state.hasMore && state.error == null) {
+      final next = state.loadedPages + 1;
+      await _fetchPage(next, append: true);
+      if (state.error != null) break;
+      if (state.hasMore) {
+        await Future.delayed(const Duration(milliseconds: 250));
+      }
+    }
+  }
+
+  /// Kept for callers that ask for one more page explicitly.
   Future<void> loadMore() async {
     if (state.loading || !state.hasMore) return;
-    await _fetchPage(state.loadedPages + 1, append: true);
+    await _fill();
   }
 
-  /// Jumps to a range, replacing what is on screen with its first page.
+  /// Jumps to a range, replacing what is on screen and filling it.
   Future<void> selectRange(EpisodeRange range) async {
     if (state.loading) return;
     state = state.copyWith(
@@ -150,10 +217,13 @@ class EpisodesNotifier extends StateNotifier<EpisodesState> {
       loadedPages: range.firstPage - 1,
       selected: range,
     );
-    await _fetchPage(range.firstPage, append: true);
+    await _fill();
   }
 
-  Future<void> retry() => _fetchPage(state.loadedPages + 1, append: true);
+  Future<void> retry() async {
+    state = state.copyWith(error: null);
+    await _fill();
+  }
 
   Future<void> _fetchPage(int page, {required bool append}) async {
     state = state.copyWith(loading: true, error: null);

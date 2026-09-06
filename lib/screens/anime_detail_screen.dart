@@ -106,42 +106,23 @@ class _DetailParts {
 
   void openBulkDownload() {
     final state = episodes;
+    final visible = state.visibleEpisodes;
     BulkDownloadSheet.show(
       context,
       anime: anime,
-      episodes: state.episodes,
+      episodes: visible,
       totalEpisodes: state.total > 0 ? state.total : anime.episodes,
+      initialFrom: visible.isEmpty ? null : visible.first.number,
+      initialTo: visible.isEmpty ? null : visible.last.number,
     );
   }
 
   Widget bulkDownloadButton({bool icon = false}) {
-    if (icon) {
-      return IconButton(
-        icon: const Icon(Icons.download_rounded,
-            color: PaheColors.accent, size: 20),
-        tooltip: 'Download several episodes',
-        onPressed: openBulkDownload,
-      );
-    }
-    return SizedBox(
-      width: double.infinity,
-      child: OutlinedButton.icon(
-        style: OutlinedButton.styleFrom(
-          side: const BorderSide(color: PaheColors.border),
-          padding: const EdgeInsets.symmetric(vertical: 12),
-        ),
-        icon: const Icon(Icons.download_rounded,
-            color: PaheColors.accent, size: 18),
-        label: const Text(
-          'Download episodes',
-          style: TextStyle(
-            color: PaheColors.textPrimary,
-            fontSize: 13,
-            fontWeight: FontWeight.w700,
-          ),
-        ),
-        onPressed: openBulkDownload,
-      ),
+    return IconButton(
+      icon: const Icon(Icons.download_rounded,
+          color: PaheColors.accent, size: 20),
+      tooltip: 'Download a custom range',
+      onPressed: openBulkDownload,
     );
   }
 
@@ -156,14 +137,28 @@ class _DetailParts {
     return e.number <= (progress?.lastEpisode ?? 0) ? 1.0 : 0.0;
   }
 
-  Widget get loadMore => episodes.hasMore && !episodes.isInitialLoad
-      ? _LoadMore(
-          loading: episodes.loading,
-          error: episodes.error,
-          loaded: episodes.episodes.length,
-          onLoad: notifier.loadMore,
-        )
-      : const SizedBox.shrink();
+  /// Says what the rest of the page is doing.
+  ///
+  /// Replaces a "load more" button: the range fills itself now, so the only
+  /// useful things to say are how far along that is, or that it stopped.
+  Widget get rangeFooter {
+    final state = episodes;
+    if (state.error != null && state.episodes.isNotEmpty) {
+      return _RangeFooterError(
+        message: state.error!,
+        onRetry: notifier.retry,
+      );
+    }
+    if (state.loading && state.episodes.isNotEmpty) {
+      return _RangeFooterLoading(
+        loaded: state.visibleEpisodes.length,
+        expected: state.expectedInRange,
+      );
+    }
+    return const SizedBox.shrink();
+  }
+
+  Widget get loadMore => rangeFooter;
 
   Widget get errorState => _EpisodesError(
         message: episodes.error ?? 'Could not load episodes.',
@@ -230,14 +225,14 @@ class _NarrowLayout extends ConsumerWidget {
             SliverList(
               delegate: SliverChildBuilderDelegate(
                 (ctx, i) => _EpisodeTile(
-                  episode: episodes.episodes[i],
+                  episode: episodes.visibleEpisodes[i],
                   anime: anime,
-                  position: parts.positionOf(episodes.episodes[i]),
-                  isCurrent: episodes.episodes[i].number ==
+                  position: parts.positionOf(episodes.visibleEpisodes[i]),
+                  isCurrent: episodes.visibleEpisodes[i].number ==
                       parts.progress?.continueEpisode,
-                  siblings: episodes.episodes,
+                  siblings: episodes.visibleEpisodes,
                 ),
-                childCount: episodes.episodes.length,
+                childCount: episodes.visibleEpisodes.length,
               ),
             ),
           SliverToBoxAdapter(child: parts.loadMore),
@@ -373,12 +368,211 @@ class _PosterPane extends StatelessWidget {
             const SizedBox(height: 6),
             SizedBox(width: double.infinity, child: parts.rangePicker),
           ],
-          if (parts.episodes.episodes.isNotEmpty) ...[
+          if (parts.episodes.visibleEpisodes.isNotEmpty) ...[
             const SizedBox(height: 16),
-            parts.bulkDownloadButton(),
+            _DownloadBlocks(anime: anime, parts: parts),
           ],
           const _DownloadsPanel(),
         ],
+      ),
+    );
+  }
+}
+
+/// Progress while the rest of the page arrives.
+class _RangeFooterLoading extends StatelessWidget {
+  final int loaded;
+  final int expected;
+
+  const _RangeFooterLoading({required this.loaded, required this.expected});
+
+  @override
+  Widget build(BuildContext context) {
+    return Row(
+      children: [
+        const SizedBox(
+          width: 14,
+          height: 14,
+          child: CircularProgressIndicator(
+              strokeWidth: 2, color: PaheColors.accent),
+        ),
+        const SizedBox(width: 10),
+        Text(
+          expected > 0
+              ? 'Loading the rest of this page — $loaded of $expected'
+              : 'Loading more episodes — $loaded so far',
+          style: const TextStyle(color: PaheColors.textMuted, fontSize: 11),
+        ),
+      ],
+    );
+  }
+}
+
+class _RangeFooterError extends StatelessWidget {
+  final String message;
+  final VoidCallback onRetry;
+
+  const _RangeFooterError({required this.message, required this.onRetry});
+
+  @override
+  Widget build(BuildContext context) {
+    return Row(
+      children: [
+        Expanded(
+          child: Text(
+            // 429 is animepahe throttling a burst, not a real failure.
+            message.contains('429')
+                ? 'animepahe asked us to slow down; the rest of this page is '
+                    'not loaded yet.'
+                : 'Could not load the rest of this page.',
+            style: const TextStyle(color: PaheColors.textMuted, fontSize: 11),
+          ),
+        ),
+        TextButton(onPressed: onRetry, child: const Text('Try again')),
+      ],
+    );
+  }
+}
+
+/// Download buttons, one per block of 25 in the page on screen.
+///
+/// A single "download episodes" button that opened a sheet asked for the same
+/// two numbers every time. The blocks are fixed, so they are just buttons: a
+/// 100-episode page gives EP 1-25, 26-50, 51-75, 76-100, and a shorter page
+/// gives correspondingly fewer.
+class _DownloadBlocks extends StatelessWidget {
+  final Anime anime;
+  final _DetailParts parts;
+
+  const _DownloadBlocks({required this.anime, required this.parts});
+
+  @override
+  Widget build(BuildContext context) {
+    final state = parts.episodes;
+    final chunks = state.downloadChunks;
+    if (chunks.isEmpty) return const SizedBox.shrink();
+
+    final settings = parts.ref.watch(settingsProvider);
+    final quality = settings.preferredQuality;
+    final audio = settings.prefersDub ? 'DUB' : 'SUB';
+    final total = state.total > 0 ? state.total : anime.episodes;
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Row(
+          children: [
+            const Text(
+              'DOWNLOAD',
+              style: TextStyle(
+                color: PaheColors.textMuted,
+                fontSize: 10,
+                fontWeight: FontWeight.w800,
+                letterSpacing: 1,
+              ),
+            ),
+            const Spacer(),
+            Text(
+              '$quality $audio',
+              style:
+                  const TextStyle(color: PaheColors.textMuted, fontSize: 10),
+            ),
+          ],
+        ),
+        const SizedBox(height: 6),
+        for (final chunk in chunks) ...[
+          _BlockButton(
+            label: 'EP ${_pad(chunk.first.number, total)}'
+                ' – ${_pad(chunk.last.number, total)}',
+            count: chunk.length,
+            onTap: () => queueEpisodes(
+              context,
+              anime: anime,
+              episodes: chunk,
+              totalEpisodes: total,
+              quality: quality,
+              audio: audio,
+            ),
+          ),
+          const SizedBox(height: 6),
+        ],
+        Align(
+          alignment: Alignment.centerLeft,
+          child: TextButton(
+            style: TextButton.styleFrom(
+              padding: EdgeInsets.zero,
+              minimumSize: const Size(0, 28),
+              tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+            ),
+            onPressed: parts.openBulkDownload,
+            child: const Text(
+              'Custom range or quality…',
+              style: TextStyle(fontSize: 11, color: PaheColors.accentLight),
+            ),
+          ),
+        ),
+      ],
+    );
+  }
+
+  /// Pads to the width of the series, so a block list reads 01-25 for a short
+  /// series and 0001-0025 for One Piece rather than jumping about.
+  String _pad(int n, int total) {
+    final width = (total > n ? total : n).toString().length.clamp(2, 4);
+    return n.toString().padLeft(width, '0');
+  }
+}
+
+class _BlockButton extends StatelessWidget {
+  final String label;
+  final int count;
+  final VoidCallback onTap;
+
+  const _BlockButton({
+    required this.label,
+    required this.count,
+    required this.onTap,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return SizedBox(
+      width: double.infinity,
+      child: Material(
+        color: PaheColors.card,
+        borderRadius: BorderRadius.circular(10),
+        child: InkWell(
+          borderRadius: BorderRadius.circular(10),
+          onTap: onTap,
+          child: Container(
+            decoration: BoxDecoration(
+              borderRadius: BorderRadius.circular(10),
+              border: Border.all(color: PaheColors.border),
+            ),
+            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 9),
+            child: Row(
+              children: [
+                const Icon(Icons.download_rounded,
+                    size: 15, color: PaheColors.accent),
+                const SizedBox(width: 8),
+                Text(
+                  label,
+                  style: const TextStyle(
+                    color: PaheColors.textPrimary,
+                    fontSize: 12,
+                    fontWeight: FontWeight.w700,
+                  ),
+                ),
+                const Spacer(),
+                Text(
+                  '$count',
+                  style: const TextStyle(
+                      color: PaheColors.textMuted, fontSize: 10),
+                ),
+              ],
+            ),
+          ),
+        ),
       ),
     );
   }
@@ -665,22 +859,9 @@ class _EpisodeGridState extends ConsumerState<_EpisodeGrid> {
   final _scroll = ScrollController();
 
   @override
-  void initState() {
-    super.initState();
-    _scroll.addListener(_maybeLoadMore);
-  }
-
-  @override
   void dispose() {
-    _scroll.removeListener(_maybeLoadMore);
     _scroll.dispose();
     super.dispose();
-  }
-
-  void _maybeLoadMore() {
-    if (!_scroll.hasClients) return;
-    final remaining = _scroll.position.maxScrollExtent - _scroll.position.pixels;
-    if (remaining < 400) widget.parts.notifier.loadMore();
   }
 
   @override
@@ -725,8 +906,8 @@ class _EpisodeGridState extends ConsumerState<_EpisodeGrid> {
             // overflowed it.
             SliverToBoxAdapter(
               child: Padding(
-                padding: const EdgeInsets.only(left: 8, right: 8, bottom: 20),
-                child: widget.parts.loadMore,
+                padding: const EdgeInsets.only(left: 20, right: 12, bottom: 24),
+                child: widget.parts.rangeFooter,
               ),
             ),
           ],
@@ -1335,58 +1516,6 @@ class _EpisodesError extends StatelessWidget {
 }
 
 /// Footer that pulls in the next page of a long series on demand.
-class _LoadMore extends StatelessWidget {
-  final bool loading;
-  final String? error;
-  final int loaded;
-  final VoidCallback onLoad;
-
-  const _LoadMore({
-    required this.loading,
-    required this.error,
-    required this.loaded,
-    required this.onLoad,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    return Padding(
-      padding: const EdgeInsets.fromLTRB(16, 8, 16, 24),
-      child: Center(
-        child: loading
-            ? const Padding(
-                padding: EdgeInsets.all(10),
-                child: SizedBox(
-                  width: 22,
-                  height: 22,
-                  child: CircularProgressIndicator(
-                    strokeWidth: 2,
-                    color: PaheColors.accent,
-                  ),
-                ),
-              )
-            : Column(
-                children: [
-                  if (error != null) ...[
-                    Text(
-                      error!.contains('429')
-                          ? 'Rate limited — try again in a moment'
-                          : 'Could not load more',
-                      style: const TextStyle(
-                          color: PaheColors.textMuted, fontSize: 12),
-                    ),
-                    const SizedBox(height: 8),
-                  ],
-                  OutlinedButton(
-                    onPressed: onLoad,
-                    child: Text('Load more  ·  $loaded so far'),
-                  ),
-                ],
-              ),
-      ),
-    );
-  }
-}
 
 /// Range dropdown for long series — scrolling to episode 900 is not viable.
 /// Only shown when a series spans more than one range.
