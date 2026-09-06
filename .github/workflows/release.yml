@@ -61,11 +61,11 @@ jobs:
       - name: Zip macOS app
         run: |
           cd build/macos/Build/Products/Release
-          zip -r PaheBoy-macOS.zip "Pahe Boy.app"
+          zip -r PaheCat-macOS.zip "Pahe Cat.app"
       - uses: actions/upload-artifact@v4
         with:
           name: macos-app
-          path: build/macos/Build/Products/Release/PaheBoy-macOS.zip
+          path: build/macos/Build/Products/Release/PaheCat-macOS.zip
 
   # ── Windows ───────────────────────────────────────────────────────────────
   windows:
@@ -81,12 +81,12 @@ jobs:
       - run: flutter pub get
       - run: flutter build windows --release
       - name: Zip Windows build
-        run: Compress-Archive build/windows/x64/runner/Release/* PaheBoy-Windows.zip
+        run: Compress-Archive build/windows/x64/runner/Release/* PaheCat-Windows.zip
         shell: pwsh
       - uses: actions/upload-artifact@v4
         with:
           name: windows-exe
-          path: PaheBoy-Windows.zip
+          path: PaheCat-Windows.zip
 
   # ── Linux ─────────────────────────────────────────────────────────────────
   linux:
@@ -105,11 +105,11 @@ jobs:
       - run: flutter pub get
       - run: flutter build linux --release
       - name: Tar Linux build
-        run: tar -czf PaheBoy-Linux.tar.gz -C build/linux/x64/release/bundle .
+        run: tar -czf PaheCat-Linux.tar.gz -C build/linux/x64/release/bundle .
       - uses: actions/upload-artifact@v4
         with:
           name: linux-build
-          path: PaheBoy-Linux.tar.gz
+          path: PaheCat-Linux.tar.gz
 
   # ── GitHub Release ────────────────────────────────────────────────────────
   release:
@@ -124,20 +124,20 @@ jobs:
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          name: "Pahe Boy ${{ github.ref_name }}"
+          name: "Pahe Cat ${{ github.ref_name }}"
           body: |
-            ## Pahe Boy ${{ github.ref_name }}
+            ## Pahe Cat ${{ github.ref_name }}
 
             AnimePahe client with watch progress tracking, sub/dub selection, and downloads.
 
             ### Downloads
             | Platform | File |
             |----------|------|
-            | Android | `PaheBoy-arm64-v8a-release.apk` (recommended) |
-            | Android (32-bit) | `PaheBoy-armeabi-v7a-release.apk` |
-            | macOS | `PaheBoy-macOS.zip` |
-            | Windows | `PaheBoy-Windows.zip` |
-            | Linux | `PaheBoy-Linux.tar.gz` |
+            | Android | `PaheCat-arm64-v8a-release.apk` (recommended) |
+            | Android (32-bit) | `PaheCat-armeabi-v7a-release.apk` |
+            | macOS | `PaheCat-macOS.zip` |
+            | Windows | `PaheCat-Windows.zip` |
+            | Linux | `PaheCat-Linux.tar.gz` |
 
             ### First Run
             The app will do a one-time Cloudflare verification when it first opens.
@@ -146,8 +146,8 @@ jobs:
             MIT License · [Source](https://github.com/${{ github.repository }})
           files: |
             artifacts/android-apk/*.apk
-            artifacts/macos-app/PaheBoy-macOS.zip
-            artifacts/windows-exe/PaheBoy-Windows.zip
-            artifacts/linux-build/PaheBoy-Linux.tar.gz
+            artifacts/macos-app/PaheCat-macOS.zip
+            artifacts/windows-exe/PaheCat-Windows.zip
+            artifacts/linux-build/PaheCat-Linux.tar.gz
           draft: false
           prerelease: false

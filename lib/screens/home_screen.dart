@@ -1,13 +1,34 @@
 import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:flutter_animate/flutter_animate.dart';
 import 'package:shimmer/shimmer.dart';
 import '../models/anime.dart';
 import '../services/animepahe_api.dart';
 import '../theme.dart';
 import '../widgets/anime_card.dart';
 import 'anime_detail_screen.dart';
+
+/// Sizes tiles from the real column width rather than a fixed aspect ratio.
+///
+/// A constant ratio cannot hold a poster's natural 2:3 shape once the column
+/// count changes with screen width — narrow phone columns came out visibly
+/// stretched. Here the height is derived: poster at 2:3, plus a fixed strip
+/// for the title.
+const _posterTarget = 168.0;
+const _posterSpacing = 10.0;
+const _posterTextStrip = 54.0;
+
+SliverGridDelegate _posterGridFor(double width) {
+  final columns = (width / _posterTarget).ceil().clamp(2, 10);
+  final tileWidth =
+      (width - _posterSpacing * (columns - 1)) / columns;
+  return SliverGridDelegateWithFixedCrossAxisCount(
+    crossAxisCount: columns,
+    crossAxisSpacing: _posterSpacing,
+    mainAxisSpacing: _posterSpacing,
+    mainAxisExtent: tileWidth * 1.5 + _posterTextStrip,
+  );
+}
 
 final _searchQueryProvider = StateProvider<String>((ref) => '');
 final _recentProvider = FutureProvider<List<Anime>>((ref) async {
@@ -91,7 +112,7 @@ class _Header extends ConsumerWidget {
           ShaderMask(
             shaderCallback: (b) => PaheColors.gradient.createShader(b),
             child: const Text(
-              'Pahe Boy',
+              'Pahe Cat',
               style: TextStyle(
                 fontSize: 28,
                 fontWeight: FontWeight.w900,
@@ -185,19 +206,16 @@ class _RecentGrid extends ConsumerWidget {
             ),
           ),
           Expanded(
-            child: GridView.builder(
+            child: LayoutBuilder(
+              builder: (ctx, box) => GridView.builder(
               padding: const EdgeInsets.symmetric(horizontal: 12),
-              gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
-                crossAxisCount: 3,
-                childAspectRatio: 0.56,
-                crossAxisSpacing: 8,
-                mainAxisSpacing: 8,
-              ),
+              gridDelegate: _posterGridFor(box.maxWidth - 24),
               itemCount: list.length,
               itemBuilder: (ctx, i) => AnimeCard(
                 anime: list[i],
                 onTap: () => _open(context, list[i]),
-              ).animate().fadeIn(delay: Duration(milliseconds: i * 30)),
+              ),
+            ),
             ),
           ),
         ],
@@ -234,20 +252,17 @@ class _SearchResults extends ConsumerWidget {
             ),
           );
         }
-        return GridView.builder(
+        return LayoutBuilder(
+          builder: (ctx, box) => GridView.builder(
           padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-          gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
-            crossAxisCount: 3,
-            childAspectRatio: 0.56,
-            crossAxisSpacing: 8,
-            mainAxisSpacing: 8,
-          ),
+          gridDelegate: _posterGridFor(box.maxWidth - 24),
           itemCount: list.length,
           itemBuilder: (ctx, i) => AnimeCard(
             anime: list[i],
             onTap: () => Navigator.push(
                 ctx, MaterialPageRoute(builder: (_) => AnimeDetailScreen(anime: list[i]))),
-          ).animate().fadeIn(delay: Duration(milliseconds: i * 25)),
+          ),
+        ),
         );
       },
     );
@@ -257,14 +272,10 @@ class _SearchResults extends ConsumerWidget {
 class _ShimmerGrid extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
-    return GridView.builder(
+    return LayoutBuilder(
+      builder: (ctx, box) => GridView.builder(
       padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-      gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
-        crossAxisCount: 3,
-        childAspectRatio: 0.56,
-        crossAxisSpacing: 8,
-        mainAxisSpacing: 8,
-      ),
+      gridDelegate: _posterGridFor(box.maxWidth - 24),
       itemCount: 9,
       itemBuilder: (_, __) => Shimmer.fromColors(
         baseColor: PaheColors.card,
@@ -275,6 +286,7 @@ class _ShimmerGrid extends StatelessWidget {
             borderRadius: BorderRadius.circular(12),
           ),
         ),
+      ),
       ),
     );
   }

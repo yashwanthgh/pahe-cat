@@ -110,6 +110,22 @@ class DomainResolver {
     }
   }
 
+  /// Rewrites an animepahe asset URL onto the live domain.
+  ///
+  /// The API returns posters and snapshots on whatever host it was written
+  /// against — currently `i.animepahe.ru`, which no longer resolves at all
+  /// while the site itself runs on `.pw`. Without this every image fails to
+  /// load. Only the TLD is swapped, so the image subdomain is preserved.
+  static String rewriteAsset(String url) {
+    if (url.isEmpty) return url;
+    final liveTld = host.split('.').last;
+    return url.replaceFirstMapped(
+      RegExp(r'^(https?://[a-z0-9.\-]*animepahe)\.[a-z]{2,6}(?=/|$)',
+          caseSensitive: false),
+      (m) => '${m.group(1)}.$liveTld',
+    );
+  }
+
   static bool _looksLikeAnimePahe(String h) =>
       h == 'animepahe.su' // known squatter, never adopt
           ? false

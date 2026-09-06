@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:cached_network_image/cached_network_image.dart';
 import 'package:shimmer/shimmer.dart';
 import '../models/anime.dart';
+import '../services/cf_session.dart';
 import '../theme.dart';
 
 class AnimeCard extends StatelessWidget {
@@ -24,13 +25,17 @@ class AnimeCard extends StatelessWidget {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Expanded(
-              flex: 7,
+            // 2:3 is the poster's real shape; the grid reserves height to match.
+            AspectRatio(
+              aspectRatio: 2 / 3,
               child: Stack(
                 fit: StackFit.expand,
                 children: [
                   CachedNetworkImage(
                     imageUrl: anime.poster,
+                    // animepahe's image host enforces hotlink protection, so a
+                    // bare request returns no image.
+                    httpHeaders: CfSession().dioHeaders,
                     fit: BoxFit.cover,
                     placeholder: (_, __) => Shimmer.fromColors(
                       baseColor: PaheColors.card,
@@ -49,8 +54,8 @@ class AnimeCard extends StatelessWidget {
                     child: _Badge(
                       text: anime.type,
                       color: anime.type == 'Movie'
-                          ? PaheColors.pink
-                          : PaheColors.purple,
+                          ? PaheColors.accent2
+                          : PaheColors.accent,
                     ),
                   ),
                   // score badge
@@ -67,9 +72,8 @@ class AnimeCard extends StatelessWidget {
               ),
             ),
             Expanded(
-              flex: 3,
               child: Padding(
-                padding: const EdgeInsets.all(6),
+                padding: const EdgeInsets.fromLTRB(7, 6, 7, 4),
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   mainAxisSize: MainAxisSize.min,
@@ -86,13 +90,14 @@ class AnimeCard extends StatelessWidget {
                       overflow: TextOverflow.ellipsis,
                     ),
                     const SizedBox(height: 2),
-                    Text(
-                      '${anime.episodes} ep · ${anime.year}',
-                      style: const TextStyle(
-                        color: PaheColors.textMuted,
-                        fontSize: 10,
+                    if (anime.subtitle.isNotEmpty)
+                      Text(
+                        anime.subtitle,
+                        style: const TextStyle(
+                          color: PaheColors.textMuted,
+                          fontSize: 10,
+                        ),
                       ),
-                    ),
                   ],
                 ),
               ),

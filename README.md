@@ -1,4 +1,4 @@
-# Pahe Boy
+# Pahe Cat
 
 AnimePahe client for all platforms. Watch progress, sub/dub selection, multi-quality downloads.
 
@@ -13,14 +13,14 @@ AnimePahe client for all platforms. Watch progress, sub/dub selection, multi-qua
 
 ## Install
 
-Download the latest release from [GitHub Releases](https://github.com/yugnasura/pahe-boy/releases).
+Download the latest release from [GitHub Releases](https://github.com/yugnasura/pahe-cat/releases).
 
 | Platform | File |
 |----------|------|
-| Android | `PaheBoy-arm64-v8a-release.apk` |
-| macOS | `PaheBoy-macOS.zip` |
-| Windows | `PaheBoy-Windows.zip` |
-| Linux | `PaheBoy-Linux.tar.gz` |
+| Android | `PaheCat-arm64-v8a-release.apk` |
+| macOS | `PaheCat-macOS.zip` |
+| Windows | `PaheCat-Windows.zip` |
+| Linux | `PaheCat-Linux.tar.gz` |
 
 ## Build from Source
 

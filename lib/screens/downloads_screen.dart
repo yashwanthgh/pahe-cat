@@ -174,7 +174,7 @@ class _DownloadTile extends StatelessWidget {
       DownloadStatus.failed => PaheColors.red,
       DownloadStatus.cancelled => PaheColors.textMuted,
       DownloadStatus.resolving => PaheColors.amber,
-      DownloadStatus.downloading => PaheColors.purple,
+      DownloadStatus.downloading => PaheColors.accent,
       DownloadStatus.queued => PaheColors.textMuted,
     };
   }
@@ -226,7 +226,7 @@ class _DownloadTile extends StatelessWidget {
                 _IconAction(
                   icon: Icons.refresh_rounded,
                   tooltip: 'Retry',
-                  color: PaheColors.purple,
+                  color: PaheColors.accent,
                   onTap: () => DownloadManager().retry(item),
                 ),
               if (item.isCompleted) ...[
@@ -258,7 +258,7 @@ class _DownloadTile extends StatelessWidget {
               lineHeight: 6,
               backgroundColor: PaheColors.border,
               linearGradient: const LinearGradient(
-                colors: [PaheColors.purple, PaheColors.pink],
+                colors: [PaheColors.accent, PaheColors.accent2],
               ),
               barRadius: const Radius.circular(3),
               padding: EdgeInsets.zero,

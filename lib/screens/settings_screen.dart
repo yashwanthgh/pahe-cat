@@ -47,7 +47,7 @@ class SettingsScreen extends StatelessWidget {
                   _SettingTile(
                     icon: Icons.folder_rounded,
                     title: 'Download Location',
-                    subtitle: 'Desktop/Pahe Boy',
+                    subtitle: 'Desktop/Pahe Cat',
                     onTap: () {},
                   ),
                   _SettingTile(
@@ -71,7 +71,7 @@ class SettingsScreen extends StatelessWidget {
                   _SettingTile(
                     icon: Icons.code_rounded,
                     title: 'Source Code',
-                    subtitle: 'github.com/yugnasura/pahe-boy',
+                    subtitle: 'github.com/yugnasura/pahe-cat',
                     onTap: () {},
                   ),
                   _SettingTile(
@@ -89,7 +89,7 @@ class SettingsScreen extends StatelessWidget {
                     ShaderMask(
                       shaderCallback: (b) => PaheColors.gradient.createShader(b),
                       child: const Text(
-                        'Pahe Boy',
+                        'Pahe Cat',
                         style: TextStyle(
                           fontSize: 20,
                           fontWeight: FontWeight.w900,
@@ -177,10 +177,10 @@ class _SettingTile extends StatelessWidget {
         width: 36,
         height: 36,
         decoration: BoxDecoration(
-          color: PaheColors.purple.withOpacity(0.15),
+          color: PaheColors.accent.withOpacity(0.15),
           borderRadius: BorderRadius.circular(10),
         ),
-        child: Icon(icon, color: PaheColors.purpleLight, size: 18),
+        child: Icon(icon, color: PaheColors.accentLight, size: 18),
       ),
       title: Text(
         title,

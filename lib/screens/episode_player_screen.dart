@@ -47,7 +47,7 @@ class _EpisodePlayerScreenState extends ConsumerState<EpisodePlayerScreen> {
       ),
       body: sources.when(
         loading: () => const Center(
-          child: CircularProgressIndicator(color: PaheColors.purple),
+          child: CircularProgressIndicator(color: PaheColors.accent),
         ),
         error: (e, _) => Center(
           child: Text('Failed to load sources: $e',
@@ -69,7 +69,7 @@ class _EpisodePlayerScreenState extends ConsumerState<EpisodePlayerScreen> {
     if (!mounted) return;
     ScaffoldMessenger.of(context).showSnackBar(SnackBar(
       content: Text(msg),
-      backgroundColor: error ? PaheColors.red : PaheColors.purple,
+      backgroundColor: error ? PaheColors.red : PaheColors.accent,
     ));
   }
 
@@ -250,14 +250,14 @@ class _SourcePickerState extends State<_SourcePicker> {
                 _ToggleBtn(
                   label: 'SUB',
                   active: _audioFilter == 'sub',
-                  color: PaheColors.cyan,
+                  color: PaheColors.info,
                   onTap: () => setState(() => _audioFilter = 'sub'),
                 ),
                 const SizedBox(width: 8),
                 _ToggleBtn(
                   label: 'DUB',
                   active: _audioFilter == 'dub',
-                  color: PaheColors.pink,
+                  color: PaheColors.accent2,
                   onTap: () => setState(() => _audioFilter = 'dub'),
                 ),
               ],
@@ -280,7 +280,7 @@ class _SourcePickerState extends State<_SourcePicker> {
                 .map((q) => _ToggleBtn(
                       label: q,
                       active: _qualityFilter == q,
-                      color: PaheColors.purple,
+                      color: PaheColors.accent,
                       onTap: () =>
                           setState(() => _qualityFilter = q == _qualityFilter ? null : q),
                     ))
@@ -384,13 +384,13 @@ class _SourceRow extends StatelessWidget {
           Container(
             padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
             decoration: BoxDecoration(
-              color: PaheColors.purple.withOpacity(0.15),
+              color: PaheColors.accent.withOpacity(0.15),
               borderRadius: BorderRadius.circular(8),
             ),
             child: Text(
               source.quality,
               style: const TextStyle(
-                color: PaheColors.purpleLight,
+                color: PaheColors.accentLight,
                 fontWeight: FontWeight.w800,
                 fontSize: 13,
               ),
@@ -409,21 +409,21 @@ class _SourceRow extends StatelessWidget {
               height: 20,
               child: CircularProgressIndicator(
                 strokeWidth: 2,
-                color: PaheColors.purple,
+                color: PaheColors.accent,
               ),
             )
           else ...[
             _ActionBtn(
               icon: Icons.play_arrow_rounded,
               label: 'Watch',
-              color: PaheColors.purple,
+              color: PaheColors.accent,
               onTap: onWatch,
             ),
             const SizedBox(width: 8),
             _ActionBtn(
               icon: Icons.download_rounded,
               label: 'Save',
-              color: PaheColors.pink,
+              color: PaheColors.accent2,
               onTap: onDownload,
             ),
           ],

@@ -82,7 +82,7 @@ class _NavItem extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final color = active ? PaheColors.purple : PaheColors.textMuted;
+    final color = active ? PaheColors.accent : PaheColors.textMuted;
     return GestureDetector(
       onTap: onTap,
       behavior: HitTestBehavior.opaque,
@@ -90,7 +90,7 @@ class _NavItem extends StatelessWidget {
         duration: const Duration(milliseconds: 200),
         padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
         decoration: BoxDecoration(
-          color: active ? PaheColors.purple.withOpacity(0.12) : Colors.transparent,
+          color: active ? PaheColors.accent.withOpacity(0.12) : Colors.transparent,
           borderRadius: BorderRadius.circular(12),
         ),
         child: Column(

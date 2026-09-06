@@ -5,24 +5,27 @@ import 'package:flutter/material.dart';
 import 'package:flutter_inappwebview/flutter_inappwebview.dart';
 import 'domain_resolver.dart';
 
-/// Holds the Cloudflare clearance cookies for the current animepahe domain.
+/// Holds the cleared Cloudflare session and runs requests through it.
+///
+/// Copying `cf_clearance` into a normal HTTP client is not enough: Cloudflare
+/// also fingerprints the TLS handshake and header order, so the same cookie
+/// sent from Dart's HTTP client still comes back 403. Requests therefore run
+/// as `fetch` inside the WebView that passed the challenge, which carries the
+/// right cookies, User-Agent and TLS fingerprint by construction.
 class CfSession {
   static final CfSession _instance = CfSession._();
   CfSession._();
   factory CfSession() => _instance;
 
-  Map<String, String> _cookies = {};
+  InAppWebViewController? _controller;
   bool _ready = false;
-  String? _uaOverride;
+  String? _uaFromWebView;
 
-  bool get isReady => _ready;
+  bool get isReady => _ready && _controller != null;
 
-  /// A UA matching the host platform. An Android UA sent from a desktop build
-  /// is a fingerprint mismatch that Cloudflare scores against us.
-  String get userAgent {
-    if (_uaOverride != null) return _uaOverride!;
-    const chrome =
-        'AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0';
+  /// Set on the WebView before any page exists to read a UA from.
+  static String get defaultUserAgent {
+    const chrome = 'AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0';
     if (kIsWeb) return 'Mozilla/5.0 $chrome Safari/537.36';
     if (Platform.isAndroid) {
       return 'Mozilla/5.0 (Linux; Android 13; Pixel 7) $chrome Mobile Safari/537.36';
@@ -40,37 +43,96 @@ class CfSession {
     return 'Mozilla/5.0 (X11; Linux x86_64) $chrome Safari/537.36';
   }
 
+  /// Read from the live page rather than assumed — the clearance is bound to
+  /// the exact User-Agent that earned it.
+  String get userAgent => _uaFromWebView ?? defaultUserAgent;
+
+  String _cookieHeader = '';
+
+  /// For the requests that must leave the WebView — images and video files.
+  ///
+  /// The image host (`i.animepahe.*`) sits behind Cloudflare too and answers
+  /// 403 to a request carrying only a Referer, so the clearance cookie has to
+  /// travel with these as well.
   Map<String, String> get dioHeaders => {
         'User-Agent': userAgent,
         'Referer': DomainResolver.referer,
-        'Origin': DomainResolver.origin,
-        'X-Requested-With': 'XMLHttpRequest',
-        if (_cookies.isNotEmpty)
-          'Cookie':
-              _cookies.entries.map((e) => '${e.key}=${e.value}').join('; '),
+        'Accept-Language': 'en-US,en;q=0.9',
+        if (_cookieHeader.isNotEmpty) 'Cookie': _cookieHeader,
       };
 
-  void onCookiesReady(Map<String, String> cookies, {String? ua}) {
-    _cookies = Map.from(cookies);
-    if (ua != null && ua.isNotEmpty) _uaOverride = ua;
+  Future<void> attach(InAppWebViewController c) async {
+    _controller = c;
+    _uaFromWebView = await _readUserAgent(c);
+    await _captureCookies();
     _ready = true;
   }
 
-  /// Call when requests start coming back 403 — forces a fresh handshake.
+  /// Snapshots the cleared cookies for use outside the WebView.
+  Future<void> _captureCookies() async {
+    try {
+      final jar = CookieManager.instance();
+      final cookies = await jar.getCookies(url: WebUri(DomainResolver.base));
+      _cookieHeader =
+          cookies.map((c) => '${c.name}=${c.value}').join('; ');
+    } catch (_) {
+      _cookieHeader = '';
+    }
+  }
+
+  Future<String?> _readUserAgent(InAppWebViewController c) async {
+    try {
+      final ua = await c.evaluateJavascript(source: 'navigator.userAgent');
+      final s = ua?.toString();
+      return (s == null || s.isEmpty) ? null : s;
+    } catch (_) {
+      return null;
+    }
+  }
+
   void invalidate() {
-    _cookies = {};
     _ready = false;
+    _controller = null;
+  }
+
+  /// Fetches [url] from inside the cleared page and returns the body.
+  Future<String> fetch(String url, {bool asJson = true}) async {
+    final c = _controller;
+    if (c == null) throw StateError('Cloudflare session is not ready yet');
+
+    final result = await c.callAsyncJavaScript(
+      functionBody: r'''
+        const res = await fetch(url, {
+          credentials: 'include',
+          headers: asJson
+            ? { 'Accept': 'application/json, text/javascript, */*; q=0.01',
+                'X-Requested-With': 'XMLHttpRequest' }
+            : { 'Accept': 'text/html,application/xhtml+xml' },
+        });
+        if (!res.ok) throw new Error('HTTP ' + res.status);
+        return await res.text();
+      ''',
+      arguments: {'url': url, 'asJson': asJson},
+    );
+
+    if (result == null) throw Exception('No response from WebView');
+    if (result.error != null) throw Exception('Request failed: ${result.error}');
+    final body = result.value;
+    if (body is! String || body.isEmpty) {
+      throw Exception('Empty response for $url');
+    }
+    return body;
   }
 }
 
-enum _GateState { probing, clearing, needsUser, failed }
+enum _GateState { probing, clearing, needsUser }
 
-/// Resolves the live domain, then clears Cloudflare in a WebView.
+/// Resolves the live domain, clears Cloudflare, then keeps the cleared WebView
+/// mounted off-screen so [CfSession.fetch] can keep using it.
 ///
-/// The WebView stays off-screen while the challenge solves itself. If it is
-/// still not cleared after [_autoTimeout] the challenge is interactive, so the
-/// WebView is shown full-screen for the user to solve, rather than leaving the
-/// app stuck on a splash screen forever.
+/// Most challenges solve themselves. One that still needs a tap after
+/// [_autoTimeout] is shown inside app chrome, rather than leaving the app on a
+/// splash screen forever.
 class CfGatewayWidget extends StatefulWidget {
   final VoidCallback onReady;
   final Widget child;
@@ -82,7 +144,10 @@ class CfGatewayWidget extends StatefulWidget {
 }
 
 class _CfGatewayWidgetState extends State<CfGatewayWidget> {
-  static const _autoTimeout = Duration(seconds: 12);
+  /// Cloudflare's managed challenge often spends 15-20s on "Verifying…" before
+  /// clearing itself. A shorter wait pushes the interactive frame in front of a
+  /// check that was about to pass on its own.
+  static const _autoTimeout = Duration(seconds: 35);
 
   _GateState _state = _GateState.probing;
   bool _cleared = false;
@@ -103,143 +168,190 @@ class _CfGatewayWidgetState extends State<CfGatewayWidget> {
 
   Future<void> _start() async {
     await DomainResolver.loadCached();
-    if (!CfSession().isReady) {
-      await DomainResolver.resolve();
-    }
+    await DomainResolver.resolve();
     if (!mounted) return;
     setState(() {
       _url = DomainResolver.base;
       _state = _GateState.clearing;
     });
     _timer = Timer(_autoTimeout, () {
-      if (!_cleared && mounted) {
-        setState(() => _state = _GateState.needsUser);
-      }
+      if (!_cleared && mounted) setState(() => _state = _GateState.needsUser);
     });
   }
 
   Future<void> _onLoadStop(InAppWebViewController c, WebUri? url) async {
     if (_cleared) return;
 
-    // A redirect to a different animepahe host means the domain moved.
     final landed = url?.host;
     if (landed != null) await DomainResolver.adoptFromWebView(landed);
-
     if (!await _looksCleared(c)) return;
 
     _cleared = true;
     _timer?.cancel();
-
-    final jar = CookieManager.instance();
-    final raw = await jar.getCookies(url: WebUri(DomainResolver.base));
-    CfSession().onCookiesReady(
-      {for (final ck in raw) ck.name: ck.value.toString()},
-    );
-    if (mounted) widget.onReady();
+    await CfSession().attach(c);
+    // The clearance cookie persists in the platform WebView's own cookie
+    // store, so a later launch loads straight through without a challenge.
+    if (mounted) {
+      setState(() {});
+      widget.onReady();
+    }
   }
 
-  /// Cloudflare interstitials carry a challenge marker and no site content.
-  /// Checking for a real API surface is more reliable than string-matching the
-  /// page, since challenge pages also contain the site name in the title.
+  /// Confirms clearance by calling the API rather than matching page markup.
+  ///
+  /// Looking for strings like "latest release" meant a markup change left the
+  /// app stuck behind a challenge it had already passed. The API only returns
+  /// JSON once Cloudflare has let us through, which makes this a direct test
+  /// of the thing we actually need.
   Future<bool> _looksCleared(InAppWebViewController c) async {
     final html = (await c.getHtml() ?? '').toLowerCase();
     if (html.isEmpty) return false;
-    const markers = [
+
+    const challengeMarkers = [
       'cf-browser-verification',
       'challenge-platform',
-      'cf-challenge',
       'just a moment',
       'checking your browser',
-      'turnstile',
+      'cf-challenge',
     ];
-    if (markers.any(html.contains)) return false;
-    // The real site ships a nav/search shell; a bare CF page does not.
-    return html.contains('animepahe') && html.contains('</nav>') ||
-        html.contains('id="search"') ||
-        html.contains('class="episode');
+    if (challengeMarkers.any(html.contains)) return false;
+
+    try {
+      final probe = await c.callAsyncJavaScript(functionBody: r'''
+        const r = await fetch('/api?m=airing&page=1', {
+          credentials: 'include',
+          headers: { 'Accept': 'application/json',
+                     'X-Requested-With': 'XMLHttpRequest' },
+        });
+        if (!r.ok) return 'status:' + r.status;
+        const t = (await r.text()).trim();
+        return t.startsWith('{') || t.startsWith('[') ? 'ok' : 'notjson';
+      ''');
+      return probe?.value == 'ok';
+    } catch (_) {
+      return false;
+    }
   }
 
   @override
   Widget build(BuildContext context) {
-    final interactive = _state == _GateState.needsUser;
+    final ready = CfSession().isReady;
+    final interactive = _state == _GateState.needsUser && !ready;
+    final size = MediaQuery.of(context).size;
 
     return Stack(
       children: [
-        if (CfSession().isReady) widget.child else _Splash(state: _state),
-        if (!CfSession().isReady && _url != null)
-          // Off-screen until we know a human is needed, then full-screen.
-          Positioned.fill(
-            child: IgnorePointer(
-              ignoring: !interactive,
-              child: Opacity(
-                opacity: interactive ? 1 : 0,
-                child: InAppWebView(
-                  initialUrlRequest: URLRequest(url: WebUri(_url!)),
-                  initialSettings: InAppWebViewSettings(
-                    userAgent: CfSession().userAgent,
-                    javaScriptEnabled: true,
-                    domStorageEnabled: true,
-                    clearCache: false,
-                    transparentBackground: true,
-                  ),
-                  onLoadStop: _onLoadStop,
+        if (ready) widget.child else _GateSplash(message: _splashMessage),
+
+        // Stays mounted after clearing: disposing it would take the cleared
+        // session with it. Parked at 1x1 off-screen once off screen is fine.
+        if (_url != null)
+          Positioned(
+            left: interactive ? 0 : -10,
+            top: interactive ? 0 : -10,
+            width: interactive ? size.width : 1,
+            height: interactive ? size.height : 1,
+            child: _ChallengeFrame(
+              visible: interactive,
+              child: InAppWebView(
+                initialUrlRequest: URLRequest(url: WebUri(_url!)),
+                initialSettings: InAppWebViewSettings(
+                  userAgent: CfSession.defaultUserAgent,
+                  javaScriptEnabled: true,
+                  domStorageEnabled: true,
+                  databaseEnabled: true,
+                  thirdPartyCookiesEnabled: true,
+                  clearCache: false,
                 ),
+                onLoadStop: _onLoadStop,
               ),
             ),
           ),
       ],
     );
   }
+
+  String get _splashMessage => switch (_state) {
+        _GateState.probing => 'Finding a live server…',
+        _GateState.clearing => 'Getting things ready…',
+        _GateState.needsUser => 'Waiting for the check…',
+      };
 }
 
-class _Splash extends StatelessWidget {
-  final _GateState state;
-  const _Splash({required this.state});
+/// Wraps the challenge in app chrome, so a required tap looks deliberate
+/// instead of a bare browser dumped over the UI.
+class _ChallengeFrame extends StatelessWidget {
+  final bool visible;
+  final Widget child;
 
-  String get _message => switch (state) {
-        _GateState.probing => 'Finding a live server…',
-        _GateState.clearing => 'Verifying connection…',
-        _GateState.needsUser => 'Please complete the check above',
-        _GateState.failed => 'Could not reach animepahe',
-      };
+  const _ChallengeFrame({required this.visible, required this.child});
+
+  @override
+  Widget build(BuildContext context) {
+    if (!visible) return child;
+    return ColoredBox(
+      color: const Color(0xFFFCFBF9),
+      child: SafeArea(
+        child: Column(
+          children: [
+            const Padding(
+              padding: EdgeInsets.fromLTRB(24, 20, 24, 4),
+              child: Text(
+                'One quick check',
+                style: TextStyle(
+                  fontSize: 20,
+                  fontWeight: FontWeight.w800,
+                  color: Color(0xFF3A342F),
+                ),
+              ),
+            ),
+            const Padding(
+              padding: EdgeInsets.fromLTRB(24, 0, 24, 12),
+              child: Text(
+                'Tap the box below to confirm you are human. '
+                'Usually only needed once.',
+                style: TextStyle(fontSize: 13, color: Color(0xFF7A716A)),
+              ),
+            ),
+            Expanded(child: child),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _GateSplash extends StatelessWidget {
+  final String message;
+  const _GateSplash({required this.message});
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      backgroundColor: const Color(0xFF0A0A14),
+      backgroundColor: const Color(0xFFFCFBF9),
       body: Center(
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            ShaderMask(
-              shaderCallback: (b) => const LinearGradient(
-                colors: [Color(0xFF9B59FF), Color(0xFFFF6B9D)],
-              ).createShader(b),
-              child: const Text(
-                'Pahe Boy',
-                style: TextStyle(
-                  fontSize: 42,
-                  fontWeight: FontWeight.w900,
-                  color: Colors.white,
-                  letterSpacing: -1,
-                ),
+            const Text(
+              'Pahe Cat',
+              style: TextStyle(
+                fontSize: 38,
+                fontWeight: FontWeight.w800,
+                color: Color(0xFF3A342F),
               ),
             ),
-            const SizedBox(height: 8),
+            const SizedBox(height: 6),
             Text(
-              _message,
-              style: const TextStyle(
-                color: Color(0xFF6B6486),
-                fontSize: 13,
-                fontWeight: FontWeight.w500,
-              ),
+              message,
+              style: const TextStyle(fontSize: 13, color: Color(0xFF7A716A)),
             ),
-            const SizedBox(height: 28),
+            const SizedBox(height: 26),
             const SizedBox(
-              width: 160,
+              width: 150,
               child: LinearProgressIndicator(
-                backgroundColor: Color(0xFF2A2A40),
-                valueColor: AlwaysStoppedAnimation<Color>(Color(0xFF9B59FF)),
+                backgroundColor: Color(0xFFE8E3DC),
+                valueColor: AlwaysStoppedAnimation<Color>(Color(0xFF6B615A)),
               ),
             ),
           ],

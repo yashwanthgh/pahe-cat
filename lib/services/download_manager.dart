@@ -23,12 +23,12 @@ class DownloadManager extends ChangeNotifier {
     if (Platform.isAndroid) {
       final dir = await getExternalStorageDirectory() ??
           await getApplicationDocumentsDirectory();
-      return '${dir.path}/Pahe Boy';
+      return '${dir.path}/Pahe Cat';
     }
     final home = Platform.environment['HOME'] ??
         Platform.environment['USERPROFILE'] ??
         (await getApplicationDocumentsDirectory()).path;
-    return '$home/Desktop/Pahe Boy';
+    return '$home/Desktop/Pahe Cat';
   }
 
   void enqueue({

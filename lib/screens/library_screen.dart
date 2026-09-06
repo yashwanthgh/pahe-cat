@@ -5,6 +5,7 @@ import 'package:flutter_animate/flutter_animate.dart';
 import 'package:percent_indicator/linear_percent_indicator.dart';
 import '../models/watch_progress.dart';
 import '../services/watch_progress_db.dart';
+import '../services/cf_session.dart';
 import '../theme.dart';
 
 final _libraryProvider = FutureProvider<List<WatchProgress>>((ref) async {
@@ -46,7 +47,7 @@ class LibraryScreen extends ConsumerWidget {
             Expanded(
               child: library.when(
                 loading: () => const Center(
-                  child: CircularProgressIndicator(color: PaheColors.purple),
+                  child: CircularProgressIndicator(color: PaheColors.accent),
                 ),
                 error: (e, _) => Center(
                   child: Text('Error: $e',
@@ -127,6 +128,7 @@ class _LibraryTile extends StatelessWidget {
           borderRadius: BorderRadius.circular(10),
           child: CachedNetworkImage(
             imageUrl: progress.animePoster,
+            httpHeaders: CfSession().dioHeaders,
             width: 48,
             height: 68,
             fit: BoxFit.cover,
@@ -166,7 +168,7 @@ class _LibraryTile extends StatelessWidget {
               lineHeight: 4,
               backgroundColor: PaheColors.border,
               linearGradient: const LinearGradient(
-                colors: [PaheColors.purple, PaheColors.pink],
+                colors: [PaheColors.accent, PaheColors.accent2],
               ),
               barRadius: const Radius.circular(2),
               padding: EdgeInsets.zero,

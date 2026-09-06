@@ -1,3 +1,4 @@
+import '../services/domain_resolver.dart';
 class Episode {
   final String session;
   final int number;
@@ -26,7 +27,7 @@ class Episode {
         session: j['session'] ?? '',
         number: j['episode'] ?? 0,
         title: j['title2'] ?? '',
-        snapshot: j['snapshot'] ?? '',
+        snapshot: DomainResolver.rewriteAsset(j['snapshot'] ?? ''),
         duration: j['duration'] ?? '',
         fansub: j['fansub'] ?? '',
         audio: j['audio'] ?? 'sub',

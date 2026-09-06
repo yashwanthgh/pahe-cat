@@ -1,3 +1,4 @@
+import '../services/domain_resolver.dart';
 class Anime {
   final String session;
   final String title;
@@ -26,7 +27,7 @@ class Anime {
   factory Anime.fromJson(Map<String, dynamic> j) => Anime(
         session: j['session'] ?? '',
         title: j['title'] ?? '',
-        poster: j['poster'] ?? '',
+        poster: DomainResolver.rewriteAsset(j['poster'] ?? ''),
         type: j['type'] ?? 'TV',
         episodes: j['episodes'] ?? 0,
         status: j['status'] ?? '',
@@ -36,13 +37,21 @@ class Anime {
         slug: j['slug'] ?? '',
       );
 
+  /// Only the facts we actually have. The airing feed carries neither an
+  /// episode total nor a year, and "0 ep · 0" is worse than showing nothing.
+  String get subtitle => [
+        if (episodes > 0) '$episodes ep',
+        if (year > 0) '$year',
+      ].join(' · ');
+
   /// The `m=airing` feed returns episode releases rather than anime records,
   /// so the anime lives under anime_* keys and the only image is the episode
   /// snapshot. Mapping it with [Anime.fromJson] yields blank cards.
   factory Anime.fromAiring(Map<String, dynamic> j) => Anime(
         session: j['anime_session'] ?? '',
         title: j['anime_title'] ?? '',
-        poster: j['poster'] ?? j['snapshot'] ?? '',
+        poster: DomainResolver.rewriteAsset(
+            j['poster'] ?? j['snapshot'] ?? ''),
         type: j['type'] ?? 'TV',
         // The feed carries the latest episode number, not a series total.
         episodes: 0,

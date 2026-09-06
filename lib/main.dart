@@ -3,6 +3,7 @@ import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'screens/main_shell.dart';
 import 'services/cf_session.dart';
+import 'services/preview_data.dart';
 import 'theme.dart';
 
 void main() {
@@ -17,29 +18,33 @@ void main() {
     statusBarIconBrightness: Brightness.light,
     systemNavigationBarColor: PaheColors.surface,
   ));
-  runApp(const ProviderScope(child: PaheBoyApp()));
+  runApp(const ProviderScope(child: PaheCatApp()));
 }
 
-class PaheBoyApp extends StatefulWidget {
-  const PaheBoyApp({super.key});
+class PaheCatApp extends StatefulWidget {
+  const PaheCatApp({super.key});
 
   @override
-  State<PaheBoyApp> createState() => _PaheBoyAppState();
+  State<PaheCatApp> createState() => _PaheCatAppState();
 }
 
-class _PaheBoyAppState extends State<PaheBoyApp> {
+class _PaheCatAppState extends State<PaheCatApp> {
   bool _cfReady = false;
 
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
-      title: 'Pahe Boy',
-      theme: PaheTheme.dark,
+      title: 'Pahe Cat',
+      theme: PaheTheme.theme,
       debugShowCheckedModeBanner: false,
-      home: CfGatewayWidget(
-        onReady: () => setState(() => _cfReady = true),
-        child: _cfReady ? const MainShell() : const _SplashScreen(),
-      ),
+      // The design preview has no Cloudflare to clear and no live API, so it
+      // goes straight to the app rather than stalling on the handshake.
+      home: PreviewMode.enabled
+          ? const MainShell()
+          : CfGatewayWidget(
+              onReady: () => setState(() => _cfReady = true),
+              child: _cfReady ? const MainShell() : const _SplashScreen(),
+            ),
     );
   }
 }
@@ -58,7 +63,7 @@ class _SplashScreen extends StatelessWidget {
             ShaderMask(
               shaderCallback: (b) => PaheColors.gradient.createShader(b),
               child: const Text(
-                'Pahe Boy',
+                'Pahe Cat',
                 style: TextStyle(
                   fontSize: 42,
                   fontWeight: FontWeight.w900,
@@ -82,7 +87,7 @@ class _SplashScreen extends StatelessWidget {
               child: LinearProgressIndicator(
                 backgroundColor: PaheColors.border,
                 valueColor:
-                    const AlwaysStoppedAnimation<Color>(PaheColors.purple),
+                    const AlwaysStoppedAnimation<Color>(PaheColors.accent),
                 borderRadius: BorderRadius.circular(4),
               ),
             ),

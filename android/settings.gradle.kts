@@ -24,8 +24,8 @@ plugins {
     // release of flutter_inappwebview_android (1.1.3) still calls, so a 9.x
     // build fails while evaluating that plugin. Revisit when the plugin ships
     // a stable release that no longer references it.
-    id("com.android.application") version "8.7.3" apply false
-    id("org.jetbrains.kotlin.android") version "2.1.0" apply false
+    id("com.android.application") version "8.13.2" apply false
+    id("org.jetbrains.kotlin.android") version "2.2.20" apply false
 }
 
 include(":app")

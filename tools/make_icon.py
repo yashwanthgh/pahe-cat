@@ -3,14 +3,16 @@
 Everything stays inside the inner ~78% of the canvas so iOS's rounded-rect
 mask and Android's adaptive-icon circle mask never clip the artwork.
 """
-from PIL import Image, ImageDraw
+from PIL import Image, ImageDraw, ImageFilter
 import os
 
 S = 1024
-# Indigo -> cyan.
-INDIGO = (99, 102, 241)
-CYAN = (34, 211, 238)
-WHITE = (250, 248, 255)
+# A white plate with a warm-grey paw, matching the White Cat palette.
+# A white paw on a white plate would vanish, so the paw carries the colour and
+# the plate stays white — that also keeps the icon visible on dark wallpapers.
+PLATE = (255, 255, 255)
+PLATE_EDGE = (247, 245, 242)
+PAW = (122, 112, 104)
 
 
 def gradient(size, c1, c2):
@@ -34,67 +36,62 @@ def rounded_mask(size, radius):
     return m
 
 
-def cat_play_glyph(size):
-    """A cat head with the play triangle knocked out of it.
+def paw_glyph(size, scale=1.0):
+    """A paw print: one broad pad with four toes arched above it.
 
-    The ear bases sit inside the head circle so they merge into one silhouette;
-    detached triangles just read as noise at small sizes. Supersampled 4x
-    because small polygons alias badly.
+    Every shape is an ellipse — no corners anywhere, which is the whole point
+    after the eared version read as sharp. The outer toes sit lower and tilt
+    outward so the arch looks like a paw rather than a row of dots.
+    Supersampled 4x because circles this small alias badly.
     """
     ss = 4
     n = size * ss
     layer = Image.new("L", (n, n), 0)
     d = ImageDraw.Draw(layer)
     cx = cy = n / 2
-    r = n * 0.205
+    r = n * 0.30 * scale
 
-    # Head.
-    d.ellipse([cx - r, cy - r, cx + r, cy + r], fill=255)
+    # Main pad, sitting low and slightly wider than tall.
+    pad_w, pad_h = r * 1.06, r * 0.88
+    pad_cy = cy + r * 0.33
+    d.ellipse(
+        [cx - pad_w / 2, pad_cy - pad_h / 2, cx + pad_w / 2, pad_cy + pad_h / 2],
+        fill=255,
+    )
 
-    # Ears — base chord well inside the circle, apex outside, so they fuse.
-    for sx in (-1, 1):
-        d.polygon(
-            [
-                (cx + sx * 0.88 * r, cy - 0.42 * r),
-                (cx + sx * 0.55 * r, cy - 1.34 * r),
-                (cx + sx * 0.16 * r, cy - 0.50 * r),
-            ],
+    # Toes as (dx, dy, w, h) in units of r.
+    for dx, dy, w, h in (
+        (-0.70, -0.14, 0.30, 0.37),
+        (-0.25, -0.47, 0.33, 0.41),
+        (0.25, -0.47, 0.33, 0.41),
+        (0.70, -0.14, 0.30, 0.37),
+    ):
+        tx, ty = cx + dx * r, cy + dy * r
+        d.ellipse(
+            [tx - w * r / 2, ty - h * r / 2, tx + w * r / 2, ty + h * r / 2],
             fill=255,
         )
-
-    # Play triangle punched out. Nudged right of centre because a triangle's
-    # optical centre sits left of its bounding box.
-    tw, th = r * 0.62, r * 0.72
-    left = cx - tw * 0.34
-    d.polygon(
-        [(left, cy - th / 2), (left, cy + th / 2), (left + tw, cy)],
-        fill=0,
-    )
 
     return layer.resize((size, size), Image.LANCZOS)
 
 
 def build(size=S):
-    bg = gradient(size, INDIGO, CYAN).convert("RGBA")
+    bg = gradient(size, PLATE, PLATE_EDGE).convert("RGBA")
     icon = Image.new("RGBA", (size, size), (0, 0, 0, 0))
     icon.paste(bg, (0, 0), rounded_mask(size, int(size * 0.235)))
 
-    glyph = cat_play_glyph(size)
-    white = Image.new("RGBA", (size, size), WHITE + (255,))
-    icon.paste(white, (0, 0), glyph)
+    paw = Image.new("RGBA", (size, size), PAW + (255,))
+    icon.paste(paw, (0, 0), paw_glyph(size))
     return icon
 
 
 def build_foreground(size=S):
-    """Android adaptive foreground: glyph only, on transparency."""
+    """Android adaptive foreground: paw only, on transparency.
+    Adaptive icons crop ~33%, so the paw is shrunk into the safe centre.
+    """
     fg = Image.new("RGBA", (size, size), (0, 0, 0, 0))
-    white = Image.new("RGBA", (size, size), WHITE + (255,))
-    # Adaptive icons crop ~33%, so shrink the glyph into the safe centre.
-    inner = int(size * 0.62)
-    glyph = cat_play_glyph(inner)
-    holder = Image.new("L", (size, size), 0)
-    holder.paste(glyph, ((size - inner) // 2, (size - inner) // 2))
-    fg.paste(white, (0, 0), holder)
+    paw = Image.new("RGBA", (size, size), PAW + (255,))
+    fg.paste(paw, (0, 0), paw_glyph(size, scale=0.62))
     return fg
 
 

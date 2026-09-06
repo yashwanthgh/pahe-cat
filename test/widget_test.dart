@@ -1,10 +1,10 @@
 import 'package:flutter_test/flutter_test.dart';
-import 'package:pahe_boy/models/anime.dart';
-import 'package:pahe_boy/models/download_item.dart';
-import 'package:pahe_boy/models/stream_source.dart';
-import 'package:pahe_boy/models/watch_progress.dart';
-import 'package:pahe_boy/services/animepahe_api.dart';
-import 'package:pahe_boy/services/download_manager.dart';
+import 'package:pahe_cat/models/anime.dart';
+import 'package:pahe_cat/models/download_item.dart';
+import 'package:pahe_cat/models/stream_source.dart';
+import 'package:pahe_cat/models/watch_progress.dart';
+import 'package:pahe_cat/services/animepahe_api.dart';
+import 'package:pahe_cat/services/download_manager.dart';
 
 DownloadItem _item({
   String anime = 'Test',

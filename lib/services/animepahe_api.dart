@@ -1,4 +1,4 @@
-import 'package:dio/dio.dart';
+import 'dart:convert';
 import 'package:flutter/foundation.dart';
 import 'package:html/parser.dart' as html_parser;
 import '../models/anime.dart';
@@ -6,6 +6,7 @@ import '../models/episode.dart';
 import '../models/stream_source.dart';
 import 'cf_session.dart';
 import 'domain_resolver.dart';
+import 'preview_data.dart';
 
 /// Thrown when the play page yields no usable sources, so the UI can tell the
 /// difference between "no dub exists" and "the page layout changed".
@@ -21,45 +22,80 @@ class AnimePaheApi {
   AnimePaheApi._();
   factory AnimePaheApi() => _i;
 
-  // No baseUrl — the domain can change between calls, so every request builds
-  // its URL from the currently resolved host.
-  late final Dio _dio = Dio(BaseOptions(
-    connectTimeout: const Duration(seconds: 15),
-    receiveTimeout: const Duration(seconds: 30),
-  ));
+  /// Requests run inside the cleared WebView; see [CfSession]. The domain can
+  /// change between calls, so each URL is built from the resolved host.
+  Future<Map<String, dynamic>> _getJson(Map<String, String> query) async {
+    final uri = Uri.parse('${DomainResolver.base}/api')
+        .replace(queryParameters: query);
+    final body = await _fetchWithBackoff(uri.toString());
+    return jsonDecode(body) as Map<String, dynamic>;
+  }
 
-  Options get _opts => Options(headers: CfSession().dioHeaders);
+  /// Retries a rate-limited request instead of surfacing it as a dead end.
+  ///
+  /// animepahe answers bursts with 429; a short escalating wait clears it,
+  /// whereas failing outright left the episode list permanently empty.
+  Future<String> _fetchWithBackoff(String url, {bool asJson = true}) async {
+    const delays = [
+      Duration(milliseconds: 700),
+      Duration(seconds: 2),
+      Duration(seconds: 5),
+    ];
+    Object? last;
+    for (var attempt = 0; attempt <= delays.length; attempt++) {
+      try {
+        return await CfSession().fetch(url, asJson: asJson);
+      } catch (e) {
+        last = e;
+        final rateLimited = e.toString().contains('429');
+        if (!rateLimited || attempt == delays.length) rethrow;
+        await Future.delayed(delays[attempt]);
+      }
+    }
+    throw Exception(last ?? 'request failed');
+  }
 
   Future<List<Anime>> search(String query) async {
-    final r = await _dio.get(
-      '${DomainResolver.base}/api',
-      queryParameters: {'m': 'search', 'q': query},
-      options: _opts,
-    );
-    final data = r.data['data'] as List? ?? [];
+    if (PreviewMode.enabled) return PreviewMode.search(query);
+    final r = await _getJson({'m': 'search', 'q': query});
+    final data = r['data'] as List? ?? [];
     return data.map((j) => Anime.fromJson(j as Map<String, dynamic>)).toList();
   }
 
-  Future<({List<Episode> episodes, int totalPages, int currentPage})>
-      getEpisodes(String animeSession, {int page = 1}) async {
-    final r = await _dio.get(
-      '${DomainResolver.base}/api',
-      queryParameters: {
-        'm': 'release',
-        'id': animeSession,
-        'sort': 'episode_asc',
-        'page': page,
-      },
-      options: _opts,
-    );
-    final data = r.data['data'] as List? ?? [];
+  Future<
+      ({
+        List<Episode> episodes,
+        int totalPages,
+        int currentPage,
+        int perPage,
+        int total
+      })> getEpisodes(String animeSession, {int page = 1}) async {
+    if (PreviewMode.enabled) {
+      final eps = PreviewMode.episodes(animeSession);
+      return (
+        episodes: eps,
+        totalPages: 1,
+        currentPage: 1,
+        perPage: eps.length,
+        total: eps.length,
+      );
+    }
+    final r = await _getJson({
+      'm': 'release',
+      'id': animeSession,
+      'sort': 'episode_asc',
+      'page': '$page',
+    });
+    final data = r['data'] as List? ?? [];
     final episodes = data
         .map((j) => Episode.fromJson(j as Map<String, dynamic>, animeSession))
         .toList();
     return (
       episodes: episodes,
-      totalPages: (r.data['last_page'] as int?) ?? 1,
-      currentPage: (r.data['current_page'] as int?) ?? 1,
+      totalPages: (r['last_page'] as int?) ?? 1,
+      currentPage: (r['current_page'] as int?) ?? 1,
+      perPage: (r['per_page'] as int?) ?? episodes.length,
+      total: (r['total'] as int?) ?? episodes.length,
     );
   }
 
@@ -70,22 +106,21 @@ class AnimePaheApi {
     String animeSession, {
     void Function(int loaded, int total)? onProgress,
   }) async {
+    if (PreviewMode.enabled) return PreviewMode.episodes(animeSession);
     final first = await getEpisodes(animeSession, page: 1);
     final all = [...first.episodes];
     onProgress?.call(all.length, first.totalPages);
     if (first.totalPages <= 1) return all;
 
-    const batchSize = 5; // keep concurrent load off a Cloudflare-fronted host
-    for (var start = 2; start <= first.totalPages; start += batchSize) {
-      final end = (start + batchSize - 1).clamp(2, first.totalPages);
-      final pages = [for (var p = start; p <= end; p++) p];
-      final results = await Future.wait(
-        pages.map((p) => getEpisodes(animeSession, page: p)),
-      );
-      for (final r in results) {
-        all.addAll(r.episodes);
-      }
+    // Sequential with a gap between pages. Five at a time tripped animepahe's
+    // rate limiter, and a 429 mid-way left the caller with a partial list.
+    for (var page = 2; page <= first.totalPages; page++) {
+      final r = await getEpisodes(animeSession, page: page);
+      all.addAll(r.episodes);
       onProgress?.call(all.length, first.totalPages);
+      if (page < first.totalPages) {
+        await Future.delayed(const Duration(milliseconds: 250));
+      }
     }
 
     all.sort((a, b) => a.number.compareTo(b.number));
@@ -94,9 +129,10 @@ class AnimePaheApi {
 
   Future<List<StreamSource>> getSources(
       String animeSession, String episodeSession) async {
+    if (PreviewMode.enabled) return PreviewMode.sources;
     final url = '${DomainResolver.base}/play/$animeSession/$episodeSession';
-    final r = await _dio.get<String>(url, options: _opts);
-    final sources = parsePlayPage(r.data ?? '');
+    final html = await _fetchWithBackoff(url, asJson: false);
+    final sources = parsePlayPage(html);
     if (sources.isEmpty) throw NoSourcesFound(url);
     return sources;
   }
@@ -219,12 +255,9 @@ class AnimePaheApi {
   /// The airing feed returns episode releases, not anime records — the fields
   /// are anime_title / anime_session / snapshot, so it needs its own mapping.
   Future<List<Anime>> getRecent({int page = 1}) async {
-    final r = await _dio.get(
-      '${DomainResolver.base}/api',
-      queryParameters: {'m': 'airing', 'page': page},
-      options: _opts,
-    );
-    final data = r.data['data'] as List? ?? [];
+    if (PreviewMode.enabled) return PreviewMode.catalogue;
+    final r = await _getJson({'m': 'airing', 'page': '$page'});
+    final data = r['data'] as List? ?? [];
     final seen = <String>{};
     final out = <Anime>[];
     for (final j in data) {

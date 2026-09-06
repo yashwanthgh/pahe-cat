@@ -2,11 +2,11 @@ import 'dart:ui';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:cached_network_image/cached_network_image.dart';
-import 'package:flutter_animate/flutter_animate.dart';
 import '../models/anime.dart';
 import '../models/episode.dart';
 import '../models/watch_progress.dart';
 import '../services/providers.dart';
+import '../services/cf_session.dart';
 import '../theme.dart';
 import 'episode_player_screen.dart';
 
@@ -16,7 +16,7 @@ class AnimeDetailScreen extends ConsumerWidget {
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
-    final episodes = ref.watch(episodesProvider(anime.session));
+    final episodes = ref.watch(episodesControllerProvider(anime.session));
     final progress = ref.watch(watchProgressProvider(anime.session));
 
     return Scaffold(
@@ -62,51 +62,78 @@ class AnimeDetailScreen extends ConsumerWidget {
                   _ContinueButton(
                     anime: anime,
                     progress: progress.valueOrNull,
-                    episodes: episodes.valueOrNull ?? const [],
+                    state: episodes,
+                    onJumpToRange: (r) => ref
+                        .read(episodesControllerProvider(anime.session).notifier)
+                        .selectRange(r),
                   ),
                   const SizedBox(height: 20),
-                  const Text(
-                    'EPISODES',
-                    style: TextStyle(
-                      color: PaheColors.textMuted,
-                      fontSize: 11,
-                      fontWeight: FontWeight.w800,
-                      letterSpacing: 1.2,
-                    ),
+                  Row(
+                    children: [
+                      const Text(
+                        'EPISODES',
+                        style: TextStyle(
+                          color: PaheColors.textMuted,
+                          fontSize: 11,
+                          fontWeight: FontWeight.w800,
+                          letterSpacing: 1.2,
+                        ),
+                      ),
+                      const Spacer(),
+                      if (episodes.ranges.isNotEmpty)
+                        _RangePicker(
+                          ranges: episodes.ranges,
+                          selected: episodes.selected ?? episodes.ranges.first,
+                          onSelected: (r) => ref
+                              .read(episodesControllerProvider(anime.session)
+                                  .notifier)
+                              .selectRange(r),
+                        ),
+                    ],
                   ),
                   const SizedBox(height: 8),
                 ],
               ),
             ),
           ),
-          episodes.when(
-            loading: () => const SliverFillRemaining(
+          if (episodes.isInitialLoad)
+            const SliverFillRemaining(
               child: Center(
-                child: CircularProgressIndicator(color: PaheColors.purple),
+                child: CircularProgressIndicator(color: PaheColors.accent),
               ),
-            ),
-            error: (e, _) => SliverFillRemaining(
-              child: Center(
-                child: Text('Error: $e',
-                    style: const TextStyle(color: PaheColors.textMuted)),
+            )
+          else if (episodes.episodes.isEmpty && episodes.error != null)
+            SliverFillRemaining(
+              child: _EpisodesError(
+                message: episodes.error!,
+                onRetry: () => ref
+                    .read(episodesControllerProvider(anime.session).notifier)
+                    .retry(),
               ),
-            ),
-            data: (list) => SliverList(
+            )
+          else
+            SliverList(
               delegate: SliverChildBuilderDelegate(
                 (ctx, i) => _EpisodeTile(
-                  episode: list[i],
+                  episode: episodes.episodes[i],
                   anime: anime,
-                  isWatched: progress.valueOrNull != null &&
-                      list[i].number <= (progress.valueOrNull?.lastEpisode ?? 0),
-                ).animate().slideX(
-                      begin: 0.05,
-                      delay: Duration(milliseconds: i * 20),
-                      duration: const Duration(milliseconds: 200),
-                    ),
-                childCount: list.length,
+                  isWatched: episodes.episodes[i].number <=
+                      (progress.valueOrNull?.lastEpisode ?? 0),
+                ),
+                childCount: episodes.episodes.length,
               ),
             ),
-          ),
+          if (episodes.hasMore && !episodes.isInitialLoad)
+            SliverToBoxAdapter(
+              child: _LoadMore(
+                loading: episodes.loading,
+                error: episodes.error,
+                loaded: episodes.episodes.length,
+                onLoad: () => ref
+                    .read(episodesControllerProvider(anime.session).notifier)
+                    .loadMore(),
+              ),
+            ),
           const SliverToBoxAdapter(child: SizedBox(height: 24)),
         ],
       ),
@@ -123,7 +150,9 @@ class _HeroBanner extends StatelessWidget {
     return Stack(
       fit: StackFit.expand,
       children: [
-        CachedNetworkImage(imageUrl: anime.poster, fit: BoxFit.cover),
+        CachedNetworkImage(
+            imageUrl: anime.poster,
+            httpHeaders: CfSession().dioHeaders, fit: BoxFit.cover),
         BackdropFilter(
           filter: ImageFilter.blur(sigmaX: 8, sigmaY: 8),
           child: Container(color: Colors.black.withOpacity(0.5)),
@@ -132,7 +161,8 @@ class _HeroBanner extends StatelessWidget {
           child: ClipRRect(
             borderRadius: BorderRadius.circular(16),
             child: CachedNetworkImage(
-              imageUrl: anime.poster,
+            imageUrl: anime.poster,
+            httpHeaders: CfSession().dioHeaders,
               height: 220,
               fit: BoxFit.cover,
             ),
@@ -196,35 +226,62 @@ class _Chip extends StatelessWidget {
 }
 
 /// Resumes at the first unwatched episode, or starts the series when there is
-/// no progress yet. Hidden while the episode list is still loading, since
-/// there would be nothing to open.
+/// no progress yet.
+///
+/// With paged loading the next episode may not be on screen yet, so a missing
+/// match means "not loaded" unless every page is in — otherwise resuming at
+/// episode 500 would report the series finished after loading only page one.
 class _ContinueButton extends StatelessWidget {
   final Anime anime;
   final WatchProgress? progress;
-  final List<Episode> episodes;
+  final EpisodesState state;
+  final ValueChanged<EpisodeRange> onJumpToRange;
 
   const _ContinueButton({
     required this.anime,
     required this.progress,
-    required this.episodes,
+    required this.state,
+    required this.onJumpToRange,
   });
 
-  Episode? get _target {
-    if (episodes.isEmpty) return null;
-    final last = progress?.lastEpisode ?? 0;
-    // Episode numbers are not always contiguous (specials, gaps), so pick the
-    // next one that exists rather than assuming last + 1 is present.
-    for (final e in episodes) {
-      if (e.number > last) return e;
+  int get _lastWatched => progress?.lastEpisode ?? 0;
+
+  /// Episode numbers can skip (specials, gaps), so take the next that exists
+  /// rather than assuming lastWatched + 1 is present.
+  Episode? get _loadedTarget {
+    for (final e in state.episodes) {
+      if (e.number > _lastWatched) return e;
     }
-    return null; // fully watched
+    return null;
+  }
+
+  EpisodeRange? get _rangeHoldingNext {
+    final next = _lastWatched + 1;
+    for (final r in state.ranges) {
+      if (next >= r.firstEpisode && next <= r.lastEpisode) return r;
+    }
+    return null;
   }
 
   @override
   Widget build(BuildContext context) {
-    final target = _target;
+    if (state.episodes.isEmpty) return const SizedBox.shrink();
+
+    final target = _loadedTarget;
+
+    // Nothing newer loaded: either genuinely finished, or the next episode
+    // lives in a range that has not been fetched.
     if (target == null) {
-      if (episodes.isEmpty) return const SizedBox.shrink();
+      if (state.hasMore || state.ranges.isNotEmpty) {
+        final range = _rangeHoldingNext;
+        if (range != null) {
+          return _Banner(
+            label: 'Continue — EP ${_lastWatched + 1}',
+            trailing: 'in ${range.label}',
+            onTap: () => onJumpToRange(range),
+          );
+        }
+      }
       return Padding(
         padding: const EdgeInsets.only(top: 16),
         child: Row(
@@ -233,7 +290,7 @@ class _ContinueButton extends StatelessWidget {
                 color: PaheColors.green, size: 18),
             const SizedBox(width: 8),
             Text(
-              'All ${episodes.length} episodes watched',
+              'All caught up',
               style: const TextStyle(
                 color: PaheColors.green,
                 fontSize: 13,
@@ -245,22 +302,41 @@ class _ContinueButton extends StatelessWidget {
       );
     }
 
-    final resuming = (progress?.lastEpisode ?? 0) > 0;
+    return _Banner(
+      label: _lastWatched > 0
+          ? 'Continue — EP ${target.number}'
+          : 'Start watching — EP ${target.number}',
+      trailing: _lastWatched > 0
+          ? '$_lastWatched watched'
+          : (state.total > 0 ? '${state.total} eps' : null),
+      onTap: () => Navigator.push(
+        context,
+        MaterialPageRoute(
+          builder: (_) => EpisodePlayerScreen(anime: anime, episode: target),
+        ),
+      ),
+    );
+  }
+}
+
+class _Banner extends StatelessWidget {
+  final String label;
+  final String? trailing;
+  final VoidCallback onTap;
+
+  const _Banner({required this.label, this.trailing, required this.onTap});
+
+  @override
+  Widget build(BuildContext context) {
     return Padding(
       padding: const EdgeInsets.only(top: 16),
       child: Material(
         color: Colors.transparent,
         child: InkWell(
           borderRadius: BorderRadius.circular(14),
-          onTap: () => Navigator.push(
-            context,
-            MaterialPageRoute(
-              builder: (_) =>
-                  EpisodePlayerScreen(anime: anime, episode: target),
-            ),
-          ),
+          onTap: onTap,
           child: Container(
-            padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 14),
+            padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 14),
             decoration: BoxDecoration(
               gradient: PaheColors.gradient,
               borderRadius: BorderRadius.circular(14),
@@ -270,20 +346,20 @@ class _ContinueButton extends StatelessWidget {
                 const Icon(Icons.play_arrow_rounded,
                     color: Colors.white, size: 20),
                 const SizedBox(width: 8),
-                Text(
-                  resuming
-                      ? 'Continue — EP ${target.number}'
-                      : 'Start watching — EP ${target.number}',
-                  style: const TextStyle(
-                    color: Colors.white,
-                    fontWeight: FontWeight.w700,
-                    fontSize: 14,
+                Expanded(
+                  child: Text(
+                    label,
+                    style: const TextStyle(
+                      color: Colors.white,
+                      fontWeight: FontWeight.w700,
+                      fontSize: 14,
+                    ),
+                    overflow: TextOverflow.ellipsis,
                   ),
                 ),
-                const Spacer(),
-                if (progress != null)
+                if (trailing != null)
                   Text(
-                    '${progress!.lastEpisode} / ${episodes.length}',
+                    trailing!,
                     style: const TextStyle(color: Colors.white70, fontSize: 11),
                   ),
               ],
@@ -294,6 +370,7 @@ class _ContinueButton extends StatelessWidget {
     );
   }
 }
+
 
 class _EpisodeTile extends ConsumerWidget {
   final Episode episode;
@@ -323,12 +400,12 @@ class _EpisodeTile extends ConsumerWidget {
           decoration: BoxDecoration(
             shape: BoxShape.circle,
             color: isWatched
-                ? PaheColors.purple.withOpacity(0.2)
+                ? PaheColors.accent.withOpacity(0.2)
                 : PaheColors.border,
           ),
           child: Center(
             child: isWatched
-                ? const Icon(Icons.check_rounded, color: PaheColors.purple, size: 18)
+                ? const Icon(Icons.check_rounded, color: PaheColors.accent, size: 18)
                 : Text(
                     '${episode.number}',
                     style: const TextStyle(
@@ -352,14 +429,14 @@ class _EpisodeTile extends ConsumerWidget {
         subtitle: Text(
           episode.isDub ? 'DUB' : 'SUB',
           style: TextStyle(
-            color: episode.isDub ? PaheColors.pink : PaheColors.cyan,
+            color: episode.isDub ? PaheColors.accent2 : PaheColors.info,
             fontSize: 10,
             fontWeight: FontWeight.w700,
           ),
         ),
         trailing: IconButton(
           icon: const Icon(Icons.play_circle_outline_rounded,
-              color: PaheColors.purple, size: 28),
+              color: PaheColors.accent, size: 28),
           onPressed: () => Navigator.push(
             context,
             MaterialPageRoute(
@@ -369,6 +446,149 @@ class _EpisodeTile extends ConsumerWidget {
               ),
             ),
           ),
+        ),
+      ),
+    );
+  }
+}
+
+class _EpisodesError extends StatelessWidget {
+  final String message;
+  final VoidCallback onRetry;
+
+  const _EpisodesError({required this.message, required this.onRetry});
+
+  @override
+  Widget build(BuildContext context) {
+    final rateLimited = message.contains('429');
+    return Center(
+      child: Padding(
+        padding: const EdgeInsets.all(28),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Text(
+              rateLimited ? 'Slow down a moment' : 'Could not load episodes',
+              style: const TextStyle(
+                color: PaheColors.textPrimary,
+                fontWeight: FontWeight.w700,
+                fontSize: 15,
+              ),
+            ),
+            const SizedBox(height: 6),
+            Text(
+              rateLimited
+                  ? 'animepahe is rate limiting us. Give it a few seconds.'
+                  : message,
+              textAlign: TextAlign.center,
+              style: const TextStyle(color: PaheColors.textMuted, fontSize: 12),
+            ),
+            const SizedBox(height: 14),
+            FilledButton(onPressed: onRetry, child: const Text('Try again')),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+/// Footer that pulls in the next page of a long series on demand.
+class _LoadMore extends StatelessWidget {
+  final bool loading;
+  final String? error;
+  final int loaded;
+  final VoidCallback onLoad;
+
+  const _LoadMore({
+    required this.loading,
+    required this.error,
+    required this.loaded,
+    required this.onLoad,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(16, 8, 16, 24),
+      child: Center(
+        child: loading
+            ? const Padding(
+                padding: EdgeInsets.all(10),
+                child: SizedBox(
+                  width: 22,
+                  height: 22,
+                  child: CircularProgressIndicator(
+                    strokeWidth: 2,
+                    color: PaheColors.accent,
+                  ),
+                ),
+              )
+            : Column(
+                children: [
+                  if (error != null) ...[
+                    Text(
+                      error!.contains('429')
+                          ? 'Rate limited — try again in a moment'
+                          : 'Could not load more',
+                      style: const TextStyle(
+                          color: PaheColors.textMuted, fontSize: 12),
+                    ),
+                    const SizedBox(height: 8),
+                  ],
+                  OutlinedButton(
+                    onPressed: onLoad,
+                    child: Text('Load more  ·  $loaded so far'),
+                  ),
+                ],
+              ),
+      ),
+    );
+  }
+}
+
+/// Range dropdown for long series — scrolling to episode 900 is not viable.
+/// Only shown when a series spans more than one range.
+class _RangePicker extends StatelessWidget {
+  final List<EpisodeRange> ranges;
+  final EpisodeRange selected;
+  final ValueChanged<EpisodeRange> onSelected;
+
+  const _RangePicker({
+    required this.ranges,
+    required this.selected,
+    required this.onSelected,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 2),
+      decoration: BoxDecoration(
+        color: PaheColors.card,
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: PaheColors.border),
+      ),
+      child: DropdownButtonHideUnderline(
+        child: DropdownButton<int>(
+          value: selected.index,
+          isDense: true,
+          borderRadius: BorderRadius.circular(12),
+          dropdownColor: PaheColors.surface,
+          icon: const Icon(Icons.expand_more_rounded,
+              size: 18, color: PaheColors.textSecondary),
+          style: const TextStyle(
+            color: PaheColors.textPrimary,
+            fontSize: 12,
+            fontWeight: FontWeight.w700,
+          ),
+          items: [
+            for (final r in ranges)
+              DropdownMenuItem(value: r.index, child: Text(r.label)),
+          ],
+          onChanged: (i) {
+            if (i == null || i == selected.index) return;
+            onSelected(ranges.firstWhere((r) => r.index == i));
+          },
         ),
       ),
     );

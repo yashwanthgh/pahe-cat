@@ -1,4 +1,4 @@
-name: pahe_boy
+name: pahe_cat
 description: AnimePahe client — watch progress, downloads, sub/dub, all platforms.
 publish_to: none
 version: 1.0.0+1
@@ -31,7 +31,6 @@ dependencies:
   # UI extras
   cached_network_image: ^3.3.1
   shimmer: ^3.0.0
-  google_fonts: ^6.2.1
   flutter_animate: ^4.5.0
   percent_indicator: ^4.2.3
 
@@ -51,12 +50,20 @@ flutter:
     - assets/images/
     - assets/icon/
 
+  # Bundled rather than fetched by google_fonts at runtime: on a cold start
+  # with no cache the download can fail, and Flutter then renders the fallback
+  # font with yellow underlines.
+  fonts:
+    - family: Quicksand
+      fonts:
+        - asset: assets/fonts/Quicksand.ttf
+
 # Regenerate with: dart run flutter_launcher_icons
 # Source art comes from tools/make_icon.py
 flutter_launcher_icons:
   image_path: "assets/icon/icon.png"
   android: true
-  adaptive_icon_background: "#0A0A14"
+  adaptive_icon_background: "#FFFFFF"
   adaptive_icon_foreground: "assets/icon/icon_foreground.png"
   ios: true
   remove_alpha_ios: true
