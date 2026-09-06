@@ -4,7 +4,9 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../widgets/cf_image.dart';
 import '../models/anime.dart';
 import '../models/episode.dart';
+import '../models/download_item.dart';
 import '../models/watch_progress.dart';
+import '../services/download_manager.dart';
 import '../services/providers.dart';
 import '../theme.dart';
 import 'episode_player_screen.dart';
@@ -60,45 +62,98 @@ class _DetailParts {
         onJumpToRange: notifier.selectRange,
       );
 
-  Widget episodesHeader({required bool showLabel}) {
+  Widget episodesHeader({required bool showControls}) {
     final state = episodes;
     return Row(
       children: [
-        if (showLabel)
-          const Text(
-            'EPISODES',
-            style: TextStyle(
-              color: PaheColors.textMuted,
-              fontSize: 11,
-              fontWeight: FontWeight.w800,
-              letterSpacing: 1.2,
-            ),
+        const Text(
+          'EPISODES',
+          style: TextStyle(
+            color: PaheColors.textMuted,
+            fontSize: 11,
+            fontWeight: FontWeight.w800,
+            letterSpacing: 1.2,
           ),
+        ),
+        if (state.total > 0) ...[
+          const SizedBox(width: 8),
+          Text(
+            '${state.episodes.length} of ${state.total}',
+            style: const TextStyle(color: PaheColors.textMuted, fontSize: 11),
+          ),
+        ],
         const Spacer(),
-        if (state.episodes.isNotEmpty)
-          IconButton(
-            icon: const Icon(Icons.download_rounded,
-                color: PaheColors.accent, size: 20),
-            tooltip: 'Download several episodes',
-            onPressed: () => BulkDownloadSheet.show(
-              context,
-              anime: anime,
-              episodes: state.episodes,
-              totalEpisodes:
-                  state.total > 0 ? state.total : anime.episodes,
-            ),
-          ),
-        if (state.ranges.isNotEmpty)
-          _RangePicker(
-            ranges: state.ranges,
-            selected: state.selected ?? state.ranges.first,
-            onSelected: notifier.selectRange,
-          ),
+        // On a wide window these live in the left pane instead, where there is
+        // room to label them.
+        if (showControls) ...[
+          if (state.episodes.isNotEmpty) bulkDownloadButton(icon: true),
+          if (state.ranges.isNotEmpty) rangePicker,
+        ],
       ],
     );
   }
 
-  bool isWatched(Episode e) => e.number <= (progress?.lastEpisode ?? 0);
+  Widget get rangePicker {
+    final state = episodes;
+    if (state.ranges.isEmpty) return const SizedBox.shrink();
+    return _RangePicker(
+      ranges: state.ranges,
+      selected: state.selected ?? state.ranges.first,
+      onSelected: notifier.selectRange,
+    );
+  }
+
+  void openBulkDownload() {
+    final state = episodes;
+    BulkDownloadSheet.show(
+      context,
+      anime: anime,
+      episodes: state.episodes,
+      totalEpisodes: state.total > 0 ? state.total : anime.episodes,
+    );
+  }
+
+  Widget bulkDownloadButton({bool icon = false}) {
+    if (icon) {
+      return IconButton(
+        icon: const Icon(Icons.download_rounded,
+            color: PaheColors.accent, size: 20),
+        tooltip: 'Download several episodes',
+        onPressed: openBulkDownload,
+      );
+    }
+    return SizedBox(
+      width: double.infinity,
+      child: OutlinedButton.icon(
+        style: OutlinedButton.styleFrom(
+          side: const BorderSide(color: PaheColors.border),
+          padding: const EdgeInsets.symmetric(vertical: 12),
+        ),
+        icon: const Icon(Icons.download_rounded,
+            color: PaheColors.accent, size: 18),
+        label: const Text(
+          'Download episodes',
+          style: TextStyle(
+            color: PaheColors.textPrimary,
+            fontSize: 13,
+            fontWeight: FontWeight.w700,
+          ),
+        ),
+        onPressed: openBulkDownload,
+      ),
+    );
+  }
+
+  /// How far through [e] the viewer got, 0 if never opened.
+  double positionOf(Episode e) {
+    final map = ref.watch(episodeProgressProvider(anime.session)).valueOrNull;
+    final recorded = map?[e.number]?.position;
+    if (recorded != null) return recorded;
+    // Episodes before the furthest reached count as finished even without a
+    // row of their own, which is the case for history written before
+    // per-episode positions were stored.
+    return e.number <= (progress?.lastEpisode ?? 0) ? 1.0 : 0.0;
+  }
 
   Widget get loadMore => episodes.hasMore && !episodes.isInitialLoad
       ? _LoadMore(
@@ -153,10 +208,10 @@ class _NarrowLayout extends ConsumerWidget {
                     ),
                   ),
                   const SizedBox(height: 8),
-                  _InfoRow(anime: anime),
+                  _InfoRow(anime: anime, totalEpisodes: episodes.total),
                   parts.continueButton,
                   const SizedBox(height: 20),
-                  parts.episodesHeader(showLabel: true),
+                  parts.episodesHeader(showControls: true),
                   const SizedBox(height: 8),
                 ],
               ),
@@ -176,7 +231,9 @@ class _NarrowLayout extends ConsumerWidget {
                 (ctx, i) => _EpisodeTile(
                   episode: episodes.episodes[i],
                   anime: anime,
-                  isWatched: parts.isWatched(episodes.episodes[i]),
+                  position: parts.positionOf(episodes.episodes[i]),
+                  isCurrent: episodes.episodes[i].number ==
+                      parts.progress?.continueEpisode,
                   siblings: episodes.episodes,
                 ),
                 childCount: episodes.episodes.length,
@@ -223,7 +280,7 @@ class _WideLayout extends ConsumerWidget {
                 children: [
                   Padding(
                     padding: const EdgeInsets.fromLTRB(20, 14, 12, 4),
-                    child: parts.episodesHeader(showLabel: true),
+                    child: parts.episodesHeader(showControls: false),
                   ),
                   Expanded(
                     child: episodes.isInitialLoad
@@ -298,9 +355,165 @@ class _PosterPane extends StatelessWidget {
             ),
           ),
           const SizedBox(height: 10),
-          _InfoRow(anime: anime),
+          _InfoRow(anime: anime, totalEpisodes: parts.episodes.total),
           parts.continueButton,
+          if (parts.episodes.ranges.isNotEmpty) ...[
+            const SizedBox(height: 16),
+            const Text(
+              'EPISODE RANGE',
+              style: TextStyle(
+                color: PaheColors.textMuted,
+                fontSize: 10,
+                fontWeight: FontWeight.w800,
+                letterSpacing: 1,
+              ),
+            ),
+            const SizedBox(height: 6),
+            SizedBox(width: double.infinity, child: parts.rangePicker),
+          ],
+          if (parts.episodes.episodes.isNotEmpty) ...[
+            const SizedBox(height: 16),
+            parts.bulkDownloadButton(),
+          ],
+          const _DownloadsPanel(),
         ],
+      ),
+    );
+  }
+}
+
+/// Live download progress for this window.
+///
+/// Shown beside the episodes because that is where downloads are started from;
+/// having to switch to the Downloads tab to find out whether anything is
+/// happening is the thing this avoids.
+class _DownloadsPanel extends StatefulWidget {
+  const _DownloadsPanel();
+
+  @override
+  State<_DownloadsPanel> createState() => _DownloadsPanelState();
+}
+
+class _DownloadsPanelState extends State<_DownloadsPanel> {
+  final _manager = DownloadManager();
+
+  @override
+  void initState() {
+    super.initState();
+    _manager.addListener(_onChange);
+  }
+
+  @override
+  void dispose() {
+    _manager.removeListener(_onChange);
+    super.dispose();
+  }
+
+  void _onChange() {
+    if (mounted) setState(() {});
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final active = _manager.queue.where((i) => i.isActive).toList();
+    if (active.isEmpty) return const SizedBox.shrink();
+
+    return Padding(
+      padding: const EdgeInsets.only(top: 18),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            'DOWNLOADING (${active.length})',
+            style: const TextStyle(
+              color: PaheColors.textMuted,
+              fontSize: 10,
+              fontWeight: FontWeight.w800,
+              letterSpacing: 1,
+            ),
+          ),
+          const SizedBox(height: 8),
+          // Only the first few, so a queued season does not push the poster
+          // off the top of the pane.
+          for (final item in active.take(4)) _DownloadRow(item: item),
+          if (active.length > 4)
+            Padding(
+              padding: const EdgeInsets.only(top: 6),
+              child: Text(
+                '+${active.length - 4} more in the queue',
+                style: const TextStyle(
+                    color: PaheColors.textMuted, fontSize: 10),
+              ),
+            ),
+        ],
+      ),
+    );
+  }
+}
+
+class _DownloadRow extends StatelessWidget {
+  final DownloadItem item;
+  const _DownloadRow({required this.item});
+
+  @override
+  Widget build(BuildContext context) {
+    // A resolving item has no measurable progress yet, so it gets an
+    // indeterminate bar rather than one frozen at zero.
+    final indeterminate = item.status == DownloadStatus.resolving ||
+        (item.status == DownloadStatus.downloading && item.totalBytes == 0);
+
+    return ListenableBuilder(
+      listenable: item,
+      builder: (context, _) => Padding(
+        padding: const EdgeInsets.only(bottom: 10),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                Expanded(
+                  child: Text(
+                    'EP ${item.episodeNumber} · ${item.quality}',
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(
+                      color: PaheColors.textPrimary,
+                      fontSize: 11,
+                      fontWeight: FontWeight.w700,
+                    ),
+                  ),
+                ),
+                IconButton(
+                  icon: const Icon(Icons.close_rounded,
+                      size: 14, color: PaheColors.textMuted),
+                  visualDensity: VisualDensity.compact,
+                  padding: EdgeInsets.zero,
+                  constraints: const BoxConstraints(),
+                  tooltip: 'Cancel',
+                  onPressed: () => DownloadManager().cancel(item),
+                ),
+              ],
+            ),
+            const SizedBox(height: 4),
+            ClipRRect(
+              borderRadius: BorderRadius.circular(3),
+              child: LinearProgressIndicator(
+                value: indeterminate ? null : item.progress,
+                minHeight: 4,
+                backgroundColor: PaheColors.cardHover,
+                valueColor:
+                    const AlwaysStoppedAnimation<Color>(PaheColors.accent),
+              ),
+            ),
+            const SizedBox(height: 3),
+            Text(
+              item.progressText,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: const TextStyle(color: PaheColors.textMuted, fontSize: 10),
+            ),
+          ],
+        ),
       ),
     );
   }
@@ -308,7 +521,11 @@ class _PosterPane extends StatelessWidget {
 
 /// Episodes as a grid, so a long season fills the width instead of running off
 /// the bottom of a single column.
-class _EpisodeGrid extends StatelessWidget {
+///
+/// Loads the rest of the selected range as it is scrolled. A range labelled
+/// "EP 1-120" only ever held the first API page of 30, which made the label a
+/// lie; the remaining pages are fetched as the grid is scrolled through them.
+class _EpisodeGrid extends ConsumerStatefulWidget {
   final Anime anime;
   final _DetailParts parts;
   final List<Episode> episodes;
@@ -320,55 +537,129 @@ class _EpisodeGrid extends StatelessWidget {
   });
 
   @override
+  ConsumerState<_EpisodeGrid> createState() => _EpisodeGridState();
+}
+
+class _EpisodeGridState extends ConsumerState<_EpisodeGrid> {
+  final _scroll = ScrollController();
+
+  @override
+  void initState() {
+    super.initState();
+    _scroll.addListener(_maybeLoadMore);
+  }
+
+  @override
+  void dispose() {
+    _scroll.removeListener(_maybeLoadMore);
+    _scroll.dispose();
+    super.dispose();
+  }
+
+  void _maybeLoadMore() {
+    if (!_scroll.hasClients) return;
+    final remaining = _scroll.position.maxScrollExtent - _scroll.position.pixels;
+    if (remaining < 400) widget.parts.notifier.loadMore();
+  }
+
+  @override
   Widget build(BuildContext context) {
+    final progress =
+        ref.watch(episodeProgressProvider(widget.anime.session)).valueOrNull ??
+            const <int, EpisodeProgress>{};
+    final resumeAt = widget.parts.progress?.continueEpisode;
+
     return LayoutBuilder(
       builder: (context, box) {
-        // Aim for roughly 128px per tile, so the column count follows the
-        // window rather than being fixed.
-        final columns = (box.maxWidth / 128).floor().clamp(2, 10);
-        return GridView.builder(
-          padding: const EdgeInsets.fromLTRB(20, 4, 12, 20),
-          gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
-            crossAxisCount: columns,
-            mainAxisSpacing: 8,
-            crossAxisSpacing: 8,
-            mainAxisExtent: 64,
-          ),
-          itemCount: episodes.length + 1,
-          itemBuilder: (ctx, i) {
-            if (i == episodes.length) {
-              return parts.loadMore;
-            }
-            return _EpisodeCell(
-              episode: episodes[i],
-              anime: anime,
-              isWatched: parts.isWatched(episodes[i]),
-              siblings: episodes,
-            );
-          },
+        // Roughly 132px per tile, so the column count follows the window.
+        final columns = (box.maxWidth / 132).floor().clamp(2, 10);
+        return CustomScrollView(
+          controller: _scroll,
+          slivers: [
+            SliverPadding(
+              padding: const EdgeInsets.fromLTRB(20, 4, 12, 0),
+              sliver: SliverGrid(
+                gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
+                  crossAxisCount: columns,
+                  mainAxisSpacing: 8,
+                  crossAxisSpacing: 8,
+                  mainAxisExtent: 70,
+                ),
+                delegate: SliverChildBuilderDelegate(
+                  (ctx, i) {
+                    final e = widget.episodes[i];
+                    return _EpisodeCell(
+                      episode: e,
+                      anime: widget.anime,
+                      position: progress[e.number]?.position ?? 0,
+                      isCurrent: e.number == resumeAt,
+                      siblings: widget.episodes,
+                    );
+                  },
+                  childCount: widget.episodes.length,
+                ),
+              ),
+            ),
+            // Outside the grid: a full-width footer forced into a 70px cell
+            // overflowed it.
+            SliverToBoxAdapter(
+              child: Padding(
+                padding: const EdgeInsets.only(left: 8, right: 8, bottom: 20),
+                child: widget.parts.loadMore,
+              ),
+            ),
+          ],
         );
       },
     );
   }
 }
 
+/// One episode.
+///
+/// Three states, because "finished", "part-way through" and "not started" are
+/// different things and a single greyed-out style could not tell them apart.
+/// The tints are pale on purpose — saturated status colours shout on a white
+/// app — and the episode to continue from gets a heavier edge so it is
+/// findable in a grid of a hundred.
 class _EpisodeCell extends StatelessWidget {
   final Episode episode;
   final Anime anime;
-  final bool isWatched;
+
+  /// 0-1 through this episode.
+  final double position;
+
+  final bool isCurrent;
   final List<Episode> siblings;
 
   const _EpisodeCell({
     required this.episode,
     required this.anime,
-    required this.isWatched,
+    required this.position,
+    required this.isCurrent,
     required this.siblings,
   });
+
+  bool get _finished => position >= WatchProgress.completedAt;
+  bool get _started => position > 0.02 && !_finished;
+
+  Color get _fill {
+    if (_finished) return PaheColors.watchedTint;
+    if (_started) return PaheColors.watchingTint;
+    return PaheColors.card;
+  }
+
+  Color get _edge {
+    if (isCurrent) return PaheColors.accent;
+    if (_finished) return PaheColors.watchedEdge;
+    if (_started) return PaheColors.watchingEdge;
+    return PaheColors.border;
+  }
 
   @override
   Widget build(BuildContext context) {
     return Material(
-      color: isWatched ? PaheColors.cardHover : PaheColors.card,
+      color: _fill,
       borderRadius: BorderRadius.circular(12),
       child: InkWell(
         borderRadius: BorderRadius.circular(12),
@@ -383,49 +674,80 @@ class _EpisodeCell extends StatelessWidget {
             ),
           ),
         ),
-        child: Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+        child: Container(
+          decoration: BoxDecoration(
+            borderRadius: BorderRadius.circular(12),
+            border: Border.all(
+              color: _edge,
+              width: isCurrent ? 2 : 1,
+            ),
+          ),
+          padding: const EdgeInsets.fromLTRB(10, 7, 10, 6),
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
-            mainAxisAlignment: MainAxisAlignment.spaceBetween,
             children: [
               Row(
                 children: [
                   Text(
                     'EP ${episode.number}',
-                    style: TextStyle(
-                      color: isWatched
-                          ? PaheColors.textMuted
-                          : PaheColors.textPrimary,
+                    style: const TextStyle(
+                      color: PaheColors.textPrimary,
                       fontSize: 13,
                       fontWeight: FontWeight.w800,
                     ),
                   ),
                   const Spacer(),
-                  if (isWatched)
-                    const Icon(Icons.check_rounded,
-                        size: 14, color: PaheColors.green),
+                  if (_finished)
+                    const Icon(Icons.check_circle_rounded,
+                        size: 14, color: PaheColors.green)
+                  else if (_started)
+                    Text(
+                      '${(position * 100).round()}%',
+                      style: const TextStyle(
+                        color: PaheColors.textSecondary,
+                        fontSize: 9,
+                        fontWeight: FontWeight.w800,
+                      ),
+                    ),
                 ],
               ),
+              const Spacer(),
               Row(
                 children: [
                   Text(
                     episode.isDub ? 'DUB' : 'SUB',
                     style: TextStyle(
-                      color: episode.isDub
-                          ? PaheColors.accent2
-                          : PaheColors.info,
+                      color:
+                          episode.isDub ? PaheColors.accent2 : PaheColors.info,
                       fontSize: 9,
                       fontWeight: FontWeight.w800,
                     ),
                   ),
                   const Spacer(),
-                  Icon(Icons.play_arrow_rounded,
-                      size: 16,
-                      color: isWatched
-                          ? PaheColors.textMuted
-                          : PaheColors.accent),
+                  Icon(
+                    isCurrent
+                        ? Icons.play_circle_fill_rounded
+                        : Icons.play_arrow_rounded,
+                    size: isCurrent ? 17 : 15,
+                    color: isCurrent
+                        ? PaheColors.accent
+                        : PaheColors.textMuted,
+                  ),
                 ],
+              ),
+              const SizedBox(height: 5),
+              // A hairline rather than a full bar: at this size a thick bar
+              // crowds the two lines of text above it.
+              ClipRRect(
+                borderRadius: BorderRadius.circular(2),
+                child: LinearProgressIndicator(
+                  value: position.clamp(0.0, 1.0),
+                  minHeight: 3,
+                  backgroundColor: PaheColors.border,
+                  valueColor: AlwaysStoppedAnimation<Color>(
+                    _finished ? PaheColors.green : PaheColors.accent,
+                  ),
+                ),
               ),
             ],
           ),
@@ -495,7 +817,15 @@ class _HeroBanner extends StatelessWidget {
 
 class _InfoRow extends StatelessWidget {
   final Anime anime;
-  const _InfoRow({required this.anime});
+
+  /// From the episode feed, which knows the count even when the record does
+  /// not — the airing feed carries no episode total, so this read "0 eps".
+  final int totalEpisodes;
+
+  const _InfoRow({required this.anime, this.totalEpisodes = 0});
+
+  int get _count =>
+      anime.episodes > totalEpisodes ? anime.episodes : totalEpisodes;
 
   @override
   Widget build(BuildContext context) {
@@ -504,7 +834,7 @@ class _InfoRow extends StatelessWidget {
       runSpacing: 6,
       children: [
         _Chip(text: anime.type, icon: Icons.tv_rounded),
-        _Chip(text: '${anime.episodes} eps'),
+        if (_count > 0) _Chip(text: '$_count eps'),
         if (anime.score > 0)
           _Chip(text: '★ ${anime.score.toStringAsFixed(1)}', color: PaheColors.amber),
         _Chip(text: anime.status,
@@ -703,7 +1033,10 @@ class _Banner extends StatelessWidget {
 class _EpisodeTile extends ConsumerWidget {
   final Episode episode;
   final Anime anime;
-  final bool isWatched;
+
+  /// 0-1 through this episode.
+  final double position;
+  final bool isCurrent;
 
   /// Passed through so the player can skip to the next episode itself.
   final List<Episode> siblings;
@@ -711,18 +1044,37 @@ class _EpisodeTile extends ConsumerWidget {
   const _EpisodeTile({
     required this.episode,
     required this.anime,
-    required this.isWatched,
+    required this.position,
+    this.isCurrent = false,
     this.siblings = const [],
   });
+
+  bool get _finished => position >= WatchProgress.completedAt;
+  bool get _started => position > 0.02 && !_finished;
+  bool get isWatched => _finished;
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     return Container(
       margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 3),
       decoration: BoxDecoration(
-        color: PaheColors.card,
+        // Same three states as the grid: finished, part-watched, untouched.
+        color: _finished
+            ? PaheColors.watchedTint
+            : _started
+                ? PaheColors.watchingTint
+                : PaheColors.card,
         borderRadius: BorderRadius.circular(12),
-        border: Border.all(color: PaheColors.border),
+        border: Border.all(
+          color: isCurrent
+              ? PaheColors.accent
+              : _finished
+                  ? PaheColors.watchedEdge
+                  : _started
+                      ? PaheColors.watchingEdge
+                      : PaheColors.border,
+          width: isCurrent ? 2 : 1,
+        ),
       ),
       child: ListTile(
         contentPadding: const EdgeInsets.symmetric(horizontal: 14, vertical: 4),
@@ -736,8 +1088,9 @@ class _EpisodeTile extends ConsumerWidget {
                 : PaheColors.border,
           ),
           child: Center(
-            child: isWatched
-                ? const Icon(Icons.check_rounded, color: PaheColors.accent, size: 18)
+            child: _finished
+                ? const Icon(Icons.check_rounded,
+                    color: PaheColors.green, size: 18)
                 : Text(
                     '${episode.number}',
                     style: const TextStyle(
@@ -758,13 +1111,44 @@ class _EpisodeTile extends ConsumerWidget {
           maxLines: 1,
           overflow: TextOverflow.ellipsis,
         ),
-        subtitle: Text(
-          episode.isDub ? 'DUB' : 'SUB',
-          style: TextStyle(
-            color: episode.isDub ? PaheColors.accent2 : PaheColors.info,
-            fontSize: 10,
-            fontWeight: FontWeight.w700,
-          ),
+        subtitle: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                Text(
+                  episode.isDub ? 'DUB' : 'SUB',
+                  style: TextStyle(
+                    color: episode.isDub ? PaheColors.accent2 : PaheColors.info,
+                    fontSize: 10,
+                    fontWeight: FontWeight.w700,
+                  ),
+                ),
+                if (_started) ...[
+                  const SizedBox(width: 8),
+                  Text(
+                    '${(position * 100).round()}% watched',
+                    style: const TextStyle(
+                        color: PaheColors.textSecondary, fontSize: 10),
+                  ),
+                ],
+              ],
+            ),
+            if (position > 0) ...[
+              const SizedBox(height: 4),
+              ClipRRect(
+                borderRadius: BorderRadius.circular(2),
+                child: LinearProgressIndicator(
+                  value: position.clamp(0.0, 1.0),
+                  minHeight: 3,
+                  backgroundColor: PaheColors.border,
+                  valueColor: AlwaysStoppedAnimation<Color>(
+                    _finished ? PaheColors.green : PaheColors.accent,
+                  ),
+                ),
+              ),
+            ],
+          ],
         ),
         // Tap plays at the preferred quality; the picker is still reachable
         // for choosing a different one.

@@ -279,3 +279,14 @@ class AiringNotifier extends StateNotifier<AiringState> {
 
 final airingProvider =
     StateNotifierProvider<AiringNotifier, AiringState>((_) => AiringNotifier());
+
+/// Per-episode watch positions for one series, keyed by episode number.
+///
+/// Fetched as one map rather than a query per row, so an episode grid showing
+/// a hundred cells does not issue a hundred reads.
+final episodeProgressProvider =
+    FutureProvider.family<Map<int, EpisodeProgress>, String>(
+        (ref, animeSession) {
+  ref.watch(progressRevisionProvider);
+  return WatchProgressDb.getEpisodes(animeSession);
+});

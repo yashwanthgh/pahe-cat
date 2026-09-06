@@ -40,5 +40,14 @@ const kAmber = Color(0xFFE0B274);
 const kRed = Color(0xFFD98C8C);
 const kBlue = Color(0xFF8FA6C4);
 
+// Episode states. Three of them, so a glance separates finished from
+// in-progress from untouched. Kept as pale tints of the sage and pink already
+// in the palette rather than saturated status colours, which would shout on a
+// white app.
+const kWatchedTint = Color(0xFFEAF2EC); // pale sage — finished
+const kWatchedEdge = Color(0xFFC5DDCC);
+const kWatchingTint = Color(0xFFFDF0F3); // pale paw-pad pink — in progress
+const kWatchingEdge = Color(0xFFE9BCC6);
+
 const kGradientCardA = Color(0xFFF7F5F2);
 const kGradientCardB = Color(0xFFFCFBF9);

@@ -26,6 +26,12 @@ class PaheColors {
   static const textMuted = kTextMuted;
 
   static const green = kGreen;
+
+  /// Episode states: finished, part-watched, untouched.
+  static const watchedTint = kWatchedTint;
+  static const watchedEdge = kWatchedEdge;
+  static const watchingTint = kWatchingTint;
+  static const watchingEdge = kWatchingEdge;
   static const amber = kAmber;
   static const red = kRed;
   static const blue = kBlue;
