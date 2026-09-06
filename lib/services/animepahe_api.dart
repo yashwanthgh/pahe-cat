@@ -133,7 +133,24 @@ class AnimePaheApi {
     final url = '${DomainResolver.base}/play/$animeSession/$episodeSession';
     final html = await _fetchWithBackoff(url, asJson: false);
     final sources = parsePlayPage(html);
-    if (sources.isEmpty) throw NoSourcesFound(url);
+    if (sources.isEmpty) {
+      // The parser was written without ever seeing this page. Dump enough of
+      // it to fix the selectors rather than guess at them again.
+      debugPrint('SOURCES: none found on $url (html ${html.length} bytes)');
+      for (final m in RegExp(r'kwik[^\s"\x27<>]{0,80}').allMatches(html).take(5)) {
+        debugPrint('SOURCES: kwik mention -> ${m.group(0)}');
+      }
+      for (final m in RegExp(r'<button[^>]{0,300}>').allMatches(html).take(6)) {
+        debugPrint('SOURCES: button -> ${m.group(0)}');
+      }
+      for (final m in RegExp(r'data-(?:src|resolution|audio)="[^"]{0,80}"')
+          .allMatches(html)
+          .take(6)) {
+        debugPrint('SOURCES: attr -> ${m.group(0)}');
+      }
+      throw NoSourcesFound(url);
+    }
+    debugPrint('SOURCES: found ${sources.length} on $url');
     return sources;
   }
 
