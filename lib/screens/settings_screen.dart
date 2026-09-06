@@ -8,7 +8,7 @@ const _repoUrl = 'https://github.com/yashwanthgh/pahe-cat';
 
 /// Shown in the About row. Must match `version:` in pubspec.yaml and the
 /// released tag, so a user reporting a problem names the build they have.
-const kAppVersion = '0.3.2';
+const kAppVersion = '0.3.3';
 
 /// Every row here is wired to stored state. This screen was previously a
 /// mock-up — hard-coded values and an empty `onTap` on each row — so none of
