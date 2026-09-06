@@ -160,8 +160,7 @@ class _PageFinderViewState extends State<_PageFinderView> {
                   initialUserScripts: kShadeUserScripts,
                   initialSettings: InAppWebViewSettings(
                     userAgent: CfSession.webViewUserAgent,
-                    applicationNameForUserAgent:
-                        'Version/17.4 Safari/605.1.15',
+                    applicationNameForUserAgent: 'Version/17.4 Safari/605.1.15',
                     javaScriptEnabled: true,
                     domStorageEnabled: true,
                     thirdPartyCookiesEnabled: true,
@@ -286,8 +285,16 @@ class _KwikWebViewState extends State<_KwikWebView> {
   /// Matches the media URLs kwik ends up serving. `/get/` and `workers.dev`
   /// cover the download hand-off, which is not a file extension at all.
   static final _media = RegExp(
-    r'https?://[^\s"' r"'" r'\\<>]+?(?:\.mp4|\.mkv|\.m3u8)(?:\?[^\s"' r"'" r'\\<>]*)?'
-    r'|https?://[^\s"' r"'" r'\\<>]*(?:/get/|workers\.dev)[^\s"' r"'" r'\\<>]*',
+    r'https?://[^\s"'
+    r"'"
+    r'\\<>]+?(?:\.mp4|\.mkv|\.m3u8)(?:\?[^\s"'
+    r"'"
+    r'\\<>]*)?'
+    r'|https?://[^\s"'
+    r"'"
+    r'\\<>]*(?:/get/|workers\.dev)[^\s"'
+    r"'"
+    r'\\<>]*',
     caseSensitive: false,
   );
 
@@ -401,8 +408,7 @@ class _KwikWebViewState extends State<_KwikWebView> {
       if (expected > 0 && finalSize >= expected) {
         t.cancel();
         debugPrint('KWIK: file complete at $finalSize bytes');
-        _finish(_mediaUrl, 'webview download',
-            filePath: path, size: finalSize);
+        _finish(_mediaUrl, 'webview download', filePath: path, size: finalSize);
         return;
       }
 
@@ -526,8 +532,28 @@ class _KwikWebViewState extends State<_KwikWebView> {
   }
 
   /// Detects Cloudflare's interstitial by what it is, not by page size.
+  /// Keeps the shade off for as long as a check is up, across reloads.
+  ///
+  /// `window.__pcNoShade` lives on `window`, so it does not survive a
+  /// navigation — and Cloudflare's check reloads the page as it works. Setting
+  /// it once, on the transition into [_needsHuman], therefore held only until
+  /// the first reload: after that every fresh document started shaded again and
+  /// the check sat under an opaque cover, which is why the panel showed a blank
+  /// white area with no box to tick. A user script at document start does
+  /// survive, so the flag is installed as one for as long as it is wanted.
+  static final _noShadeScript = UserScript(
+    source: 'window.__pcNoShade = true;',
+    injectionTime: UserScriptInjectionTime.AT_DOCUMENT_START,
+  );
+  bool _noShadeInstalled = false;
+
+  /// Watches both ways: a check appearing, and a check going away again.
+  ///
+  /// This used to latch. It returned early whenever [_needsHuman] was already
+  /// set and never assigned false anywhere, so solving the check left the
+  /// enlarged dialog on screen for good — the transfer carried on underneath a
+  /// panel that still said a person was needed.
   Future<void> _checkForChallenge(InAppWebViewController c) async {
-    if (_needsHuman) return;
     try {
       final r = await c.evaluateJavascript(source: r'''
         (function () {
@@ -536,18 +562,42 @@ class _KwikWebViewState extends State<_KwikWebView> {
               t.indexOf('attention required') >= 0) return '1';
           if (document.querySelector(
                 'iframe[src*="challenges.cloudflare.com"], .cf-turnstile, ' +
-                '#challenge-form, #challenge-stage')) return '1';
+                '#challenge-form, #challenge-stage, #turnstile-wrapper')) {
+            return '1';
+          }
           return '0';
         })()
       ''');
-      if (r?.toString().trim() != '1') return;
+      final challenged = r?.toString().trim() == '1';
 
-      debugPrint('KWIK: kwik is showing a Cloudflare check');
-      // Uncover the page so the widget can be seen and clicked.
-      await c.evaluateJavascript(source: 'window.__pcNoShade = true;');
-      await c.evaluateJavascript(
-          source: "var d=document.getElementById('pc-shade'); if(d) d.remove();");
-      if (mounted) setState(() => _needsHuman = true);
+      if (challenged) {
+        if (!_noShadeInstalled) {
+          _noShadeInstalled = true;
+          debugPrint('KWIK: kwik is showing a Cloudflare check');
+          await c.addUserScript(userScript: _noShadeScript);
+        }
+        // Re-asserted on every poll, not only on the transition: the script
+        // above covers documents loaded from now on, while this uncovers the
+        // one already on screen.
+        await c.evaluateJavascript(source: 'window.__pcNoShade = true;');
+        await c.evaluateJavascript(
+            source: "var d=document.getElementById('pc-shade');"
+                ' if(d) d.remove();');
+      } else if (_noShadeInstalled) {
+        _noShadeInstalled = false;
+        debugPrint('KWIK: the check cleared, shrinking back');
+        await c.removeUserScript(userScript: _noShadeScript);
+        // Cover kwik's page again. Unlike the gate, this session never wants
+        // the site visible — only the check did.
+        await c.evaluateJavascript(source: '''
+          window.__pcNoShade = false;
+          if (window.__pcApplyShade) window.__pcApplyShade();
+        ''');
+      }
+
+      if (mounted && challenged != _needsHuman) {
+        setState(() => _needsHuman = challenged);
+      }
     } catch (e) {
       debugPrint('KWIK: challenge check threw $e');
     }
@@ -594,162 +644,175 @@ class _KwikWebViewState extends State<_KwikWebView> {
     // WebView keeps one set of ancestors either way.
     const headerHeight = 62.0;
 
+    // LayoutBuilder because centring needs a width to centre within. Without
+    // one, the panel had `left` and `right` both null and AnimatedPositioned
+    // pinned it to 0 — so the dialog that this code says is "centred and
+    // large" actually sat jammed against the left edge, half of it off screen.
     return Positioned.fill(
-      child: Stack(
-        children: [
-          // Present in both states so the tree does not gain or lose a level;
-          // invisible and untouchable until it is wanted.
-          Positioned.fill(
-            child: IgnorePointer(
-              ignoring: !_needsHuman,
-              child: ColoredBox(
-                color: _needsHuman
-                    ? const Color(0x99000000)
-                    : const Color(0x00000000),
-              ),
-            ),
-          ),
-          AnimatedPositioned(
-            duration: const Duration(milliseconds: 220),
-            curve: Curves.easeOutCubic,
-            // Centred and large when a person is needed, tucked into the
-            // corner while it is only working.
-            left: _needsHuman ? null : null,
-            right: _needsHuman ? null : 16,
-            bottom: _needsHuman ? null : 16,
-            top: _needsHuman ? 40 : null,
-            width: _needsHuman ? 460 : 300,
-            height: _needsHuman ? 560 : 190,
-            child: Material(
-              elevation: _needsHuman ? 12 : 6,
-              borderRadius: BorderRadius.circular(_needsHuman ? 16 : 12),
-              color: const Color(0xFFFCFBF9),
-              child: ClipRRect(
-                borderRadius: BorderRadius.circular(_needsHuman ? 16 : 12),
-                child: Stack(
-                  children: [
-                    // Inset below the header only in the dialog. A padding
-                    // value is a property change, not a change of ancestors.
-                    Positioned(
-                      left: 0,
-                      right: 0,
-                      bottom: 0,
-                      top: _needsHuman ? headerHeight : 0,
-                      child: InAppWebView(
-                        key: _webViewKey,
-                        initialUrlRequest: URLRequest(
-                          url: WebUri(widget.kwikUrl),
-                          headers: {'Referer': DomainResolver.referer},
-                        ),
-                        initialUserScripts: kShadeUserScripts,
-                        initialSettings: _settings,
-                        onWebViewCreated: (c) => _c = c,
-                        onCreateWindow: (c, req) async => false,
-                        shouldOverrideUrlLoading: _shouldOverride,
-                        onLoadStop: _onLoadStop,
-                        // Fires when the platform decides the response is a
-                        // file: proof the host served it.
-                        onDownloadStartRequest: (c, req) async {
-                          _reportProbe('became a download'
-                              ' (${req.contentLength} bytes,'
-                              ' ${req.mimeType},'
-                              ' "${req.suggestedFilename}")');
-                          // The patched delegate is writing it; watch the file
-                          // rather than finishing here, and keep this WebView
-                          // mounted, because disposing it cancels the
-                          // transfer it owns.
-                          final name = req.suggestedFilename ?? '';
-                          if (name.isEmpty) {
-                            _fail(Exception('The download had no filename'));
-                            return;
-                          }
-                          final dir = Directory(
-                              '${Directory.systemTemp.path}/'
-                              '${KwikResolver.tempFolder}');
-                          final path = '${dir.path}/$name';
-                          debugPrint('KWIK: watching $path');
-                          _watchFile(path, req.contentLength);
-                        },
-                        onReceivedError: (c, req, err) {
-                          if (_mediaUrl.isNotEmpty &&
-                              req.url.toString() == _mediaUrl) {
-                            _reportProbe('refused: ${err.description}');
-                          }
-                          debugPrint(
-                              'KWIK: error on ${req.url} -> ${err.description}');
-                        },
-                      ),
-                    ),
-                    if (_needsHuman)
-                      const Positioned(
-                        top: 0,
-                        left: 0,
-                        right: 0,
-                        height: headerHeight,
-                        child: ColoredBox(
-                          color: Color(0xFFFCFBF9),
-                          child: Padding(
-                            padding: EdgeInsets.fromLTRB(18, 12, 18, 6),
-                            child: Column(
-                              children: [
-                                Text(
-                                  'One check before the download',
-                                  style: TextStyle(
-                                    fontSize: 15,
-                                    fontWeight: FontWeight.w800,
-                                    color: Color(0xFF3A342F),
-                                  ),
-                                ),
-                                SizedBox(height: 3),
-                                Text(
-                                  'The file host wants to know you are human. '
-                                  'Tick the box if one appears.',
-                                  textAlign: TextAlign.center,
-                                  style: TextStyle(
-                                    fontSize: 11,
-                                    color: Color(0xFF7A716A),
-                                    height: 1.3,
-                                  ),
-                                ),
-                              ],
-                            ),
-                          ),
-                        ),
-                      )
-                    else
-                      const Positioned(
-                        left: 12,
-                        right: 12,
-                        bottom: 10,
-                        child: Row(
-                          children: [
-                            SizedBox(
-                              width: 14,
-                              height: 14,
-                              child: CircularProgressIndicator(
-                                  strokeWidth: 2, color: Color(0xFF6B615A)),
-                            ),
-                            SizedBox(width: 8),
-                            Expanded(
-                              child: Text(
-                                'Preparing download…',
-                                style: TextStyle(
-                                  fontSize: 11,
-                                  fontWeight: FontWeight.w700,
-                                  color: Color(0xFF7A716A),
-                                ),
-                              ),
-                            ),
-                          ],
-                        ),
-                      ),
-                  ],
+      child: LayoutBuilder(builder: (context, box) {
+        const dialogWidth = 460.0;
+        const dialogHeight = 560.0;
+        final centredLeft = (box.maxWidth - dialogWidth) / 2;
+        final centredTop = (box.maxHeight - dialogHeight) / 2;
+
+        return Stack(
+          children: [
+            // Present in both states so the tree does not gain or lose a level;
+            // invisible and untouchable until it is wanted.
+            Positioned.fill(
+              child: IgnorePointer(
+                ignoring: !_needsHuman,
+                child: ColoredBox(
+                  color: _needsHuman
+                      ? const Color(0x99000000)
+                      : const Color(0x00000000),
                 ),
               ),
             ),
-          ),
-        ],
-      ),
+            AnimatedPositioned(
+              duration: const Duration(milliseconds: 220),
+              curve: Curves.easeOutCubic,
+              // Centred and large when a person is needed, tucked into the
+              // corner while it is only working. Never negative: a window
+              // narrower than the dialog would otherwise push it off screen to
+              // the left, which is the very thing being fixed here.
+              left: _needsHuman ? (centredLeft > 0 ? centredLeft : 0) : null,
+              right: _needsHuman ? null : 16,
+              bottom: _needsHuman ? null : 16,
+              top: _needsHuman ? (centredTop > 0 ? centredTop : 0) : null,
+              width: _needsHuman ? dialogWidth : 300,
+              height: _needsHuman ? dialogHeight : 190,
+              child: Material(
+                elevation: _needsHuman ? 12 : 6,
+                borderRadius: BorderRadius.circular(_needsHuman ? 16 : 12),
+                color: const Color(0xFFFCFBF9),
+                child: ClipRRect(
+                  borderRadius: BorderRadius.circular(_needsHuman ? 16 : 12),
+                  child: Stack(
+                    children: [
+                      // Inset below the header only in the dialog. A padding
+                      // value is a property change, not a change of ancestors.
+                      Positioned(
+                        left: 0,
+                        right: 0,
+                        bottom: 0,
+                        top: _needsHuman ? headerHeight : 0,
+                        child: InAppWebView(
+                          key: _webViewKey,
+                          initialUrlRequest: URLRequest(
+                            url: WebUri(widget.kwikUrl),
+                            headers: {'Referer': DomainResolver.referer},
+                          ),
+                          initialUserScripts: kShadeUserScripts,
+                          initialSettings: _settings,
+                          onWebViewCreated: (c) => _c = c,
+                          onCreateWindow: (c, req) async => false,
+                          shouldOverrideUrlLoading: _shouldOverride,
+                          onLoadStop: _onLoadStop,
+                          // Fires when the platform decides the response is a
+                          // file: proof the host served it.
+                          onDownloadStartRequest: (c, req) async {
+                            _reportProbe('became a download'
+                                ' (${req.contentLength} bytes,'
+                                ' ${req.mimeType},'
+                                ' "${req.suggestedFilename}")');
+                            // The patched delegate is writing it; watch the file
+                            // rather than finishing here, and keep this WebView
+                            // mounted, because disposing it cancels the
+                            // transfer it owns.
+                            final name = req.suggestedFilename ?? '';
+                            if (name.isEmpty) {
+                              _fail(Exception('The download had no filename'));
+                              return;
+                            }
+                            final dir =
+                                Directory('${Directory.systemTemp.path}/'
+                                    '${KwikResolver.tempFolder}');
+                            final path = '${dir.path}/$name';
+                            debugPrint('KWIK: watching $path');
+                            _watchFile(path, req.contentLength);
+                          },
+                          onReceivedError: (c, req, err) {
+                            if (_mediaUrl.isNotEmpty &&
+                                req.url.toString() == _mediaUrl) {
+                              _reportProbe('refused: ${err.description}');
+                            }
+                            debugPrint(
+                                'KWIK: error on ${req.url} -> ${err.description}');
+                          },
+                        ),
+                      ),
+                      if (_needsHuman)
+                        const Positioned(
+                          top: 0,
+                          left: 0,
+                          right: 0,
+                          height: headerHeight,
+                          child: ColoredBox(
+                            color: Color(0xFFFCFBF9),
+                            child: Padding(
+                              padding: EdgeInsets.fromLTRB(18, 12, 18, 6),
+                              child: Column(
+                                children: [
+                                  Text(
+                                    'One check before the download',
+                                    style: TextStyle(
+                                      fontSize: 15,
+                                      fontWeight: FontWeight.w800,
+                                      color: Color(0xFF3A342F),
+                                    ),
+                                  ),
+                                  SizedBox(height: 3),
+                                  Text(
+                                    'The file host wants to know you are human. '
+                                    'Tick the box if one appears.',
+                                    textAlign: TextAlign.center,
+                                    style: TextStyle(
+                                      fontSize: 11,
+                                      color: Color(0xFF7A716A),
+                                      height: 1.3,
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            ),
+                          ),
+                        )
+                      else
+                        const Positioned(
+                          left: 12,
+                          right: 12,
+                          bottom: 10,
+                          child: Row(
+                            children: [
+                              SizedBox(
+                                width: 14,
+                                height: 14,
+                                child: CircularProgressIndicator(
+                                    strokeWidth: 2, color: Color(0xFF6B615A)),
+                              ),
+                              SizedBox(width: 8),
+                              Expanded(
+                                child: Text(
+                                  'Preparing download…',
+                                  style: TextStyle(
+                                    fontSize: 11,
+                                    fontWeight: FontWeight.w700,
+                                    color: Color(0xFF7A716A),
+                                  ),
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                    ],
+                  ),
+                ),
+              ),
+            ),
+          ],
+        );
+      }),
     );
   }
 
@@ -840,5 +903,4 @@ class _KwikWebViewState extends State<_KwikWebView> {
     _startPolling();
     await _probe();
   }
-
 }

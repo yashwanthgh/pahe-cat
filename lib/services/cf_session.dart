@@ -126,8 +126,7 @@ class CfSession {
     try {
       final jar = CookieManager.instance();
       final cookies = await jar.getCookies(url: WebUri(DomainResolver.base));
-      _cookieHeader =
-          cookies.map((c) => '${c.name}=${c.value}').join('; ');
+      _cookieHeader = cookies.map((c) => '${c.name}=${c.value}').join('; ');
     } catch (_) {
       _cookieHeader = '';
     }
@@ -169,7 +168,8 @@ class CfSession {
     );
 
     if (result == null) throw Exception('No response from WebView');
-    if (result.error != null) throw Exception('Request failed: ${result.error}');
+    if (result.error != null)
+      throw Exception('Request failed: ${result.error}');
     final body = result.value;
     if (body is! String || body.isEmpty) {
       throw Exception('Empty response for $url');
@@ -344,8 +344,7 @@ const String kPageShadeScript = r'''
 ''';
 
 /// Applied at document start so the page is never shown before it is covered.
-UnmodifiableListView<UserScript> get kShadeUserScripts =>
-    UnmodifiableListView([
+UnmodifiableListView<UserScript> get kShadeUserScripts => UnmodifiableListView([
       UserScript(
         source: kPageShadeScript,
         injectionTime: UserScriptInjectionTime.AT_DOCUMENT_START,
@@ -365,8 +364,7 @@ UnmodifiableListView<UserScript> get kShadeUserScripts =>
 /// So: not through yet, no shade, and whatever Cloudflare puts up is visible
 /// and clickable. Through, shade on, and animepahe's own page is hidden behind
 /// our UI — which is the only page anyone wanted hidden.
-UnmodifiableListView<UserScript> get kGateUserScripts =>
-    UnmodifiableListView([
+UnmodifiableListView<UserScript> get kGateUserScripts => UnmodifiableListView([
       UserScript(
         source: 'window.__pcNoShade = true;',
         injectionTime: UserScriptInjectionTime.AT_DOCUMENT_START,
@@ -395,7 +393,8 @@ class CfGatewayWidget extends StatefulWidget {
   final VoidCallback onReady;
   final Widget child;
 
-  const CfGatewayWidget({super.key, required this.onReady, required this.child});
+  const CfGatewayWidget(
+      {super.key, required this.onReady, required this.child});
 
   @override
   State<CfGatewayWidget> createState() => _CfGatewayWidgetState();
@@ -553,8 +552,7 @@ class _CfGatewayWidgetState extends State<CfGatewayWidget> {
   /// arrive here as one unhelpful status. This separates them by asking what
   /// the document actually is and which paths answer, which is the difference
   /// between "wait longer" and "this endpoint no longer exists".
-  Future<void> _explainFailure(
-      InAppWebViewController c, String result) async {
+  Future<void> _explainFailure(InAppWebViewController c, String result) async {
     if (_explained) return;
     _explained = true;
 

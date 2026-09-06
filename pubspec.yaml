@@ -4,7 +4,7 @@ publish_to: none
 # Kept in step with the released tag, and with kAppVersion in
 # lib/screens/settings_screen.dart, so the About row and the download the user
 # installed agree.
-version: 0.3.1+4
+version: 0.3.2+5
 
 environment:
   sdk: ">=3.3.0 <4.0.0"
