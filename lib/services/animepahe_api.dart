@@ -151,96 +151,145 @@ class AnimePaheApi {
       throw NoSourcesFound(url);
     }
     debugPrint('SOURCES: found ${sources.length} on $url');
+    for (final s in sources) {
+      debugPrint('SOURCES: ${s.quality} ${s.audio} -> ${s.kwikUrl}');
+    }
     return sources;
   }
 
-  /// Extracts kwik.si sources from a play page.
+  /// Extracts the playable and downloadable options from a play page.
   ///
-  /// Attribute order is not assumed and the markup is walked with a real HTML
-  /// parser, because a positional regex breaks the moment the page is
-  /// re-rendered. Falls back to scanning raw text so a layout change degrades
-  /// to fewer sources rather than none.
+  /// Written against the markup the site actually serves, which pairs each
+  /// option across two separate menus:
+  ///
+  ///   <button data-src="https://kwik.cx/e/jfj8GR28xTe4" data-fansub="SubsPlease"
+  ///           data-resolution="360" data-audio="jpn">SubsPlease &middot; 360p</button>
+  ///
+  ///   <a href="https://pahe.win/YlPTN" class="dropdown-item">
+  ///     SubsPlease &middot; 360p (20MB)</a>
+  ///
+  /// The buttons carry the structured metadata but no size and no downloadable
+  /// link; the anchors carry the size and the only link that yields a file. So
+  /// both are read and then matched up on quality and audio.
+  ///
+  /// Attributes are read by name through a real HTML parser rather than by
+  /// position, because a positional regex breaks the moment the page is
+  /// re-rendered.
   @visibleForTesting
   static List<StreamSource> parsePlayPage(String html) {
     if (html.isEmpty) return const [];
-    final found = <String, StreamSource>{}; // keyed by url — dedupes strategies
 
-    void add(String? url, String? res, String? audio, String? size) {
-      if (url == null || !url.contains('kwik')) return;
-      final quality = _normalizeQuality(res) ?? _qualityFromText(url) ?? '';
-      found.putIfAbsent(
-        url,
-        () => StreamSource(
-          kwikUrl: url,
-          quality: quality.isEmpty ? 'unknown' : quality,
-          audio: (audio == null || audio.isEmpty) ? 'jpn' : audio,
-          fileSize: size ?? '',
-        ),
-      );
-    }
+    final streams = <StreamSource>[];
+    final downloads = <StreamSource>[];
 
     try {
       final doc = html_parser.parse(html);
-      // Download anchors and the resolution menu both carry the same data-*
-      // attributes; querying by attribute presence avoids depending on
-      // container ids that change with the theme.
-      for (final el in doc.querySelectorAll('a, button')) {
+
+      for (final el in doc.querySelectorAll('button[data-src], a[data-src]')) {
         final a = el.attributes;
-        final url = a['data-src'] ?? a['href'];
-        if (url == null || !url.contains('kwik')) continue;
-        add(
-          url,
-          a['data-resolution'] ?? a['data-res'] ?? a['data-quality'],
-          a['data-audio'] ?? a['data-lang'],
-          a['data-filesize'] ?? a['data-size'],
-        );
-        // Link text is often "720p (250MB)" / "eng · 1080p" when attrs are absent.
-        if (found[url]?.quality == 'unknown') {
-          final text = el.text;
-          final q = _qualityFromText(text);
-          if (q != null) {
-            found[url] = StreamSource(
-              kwikUrl: url,
-              quality: q,
-              audio: _audioFromText(text) ?? found[url]!.audio,
-              fileSize: found[url]!.fileSize,
-            );
-          }
-        }
+        final url = a['data-src'] ?? a['data-url'] ?? '';
+        if (url.isEmpty) continue;
+        final quality = _normalizeQuality(a['data-resolution'] ??
+                a['data-res'] ??
+                a['data-quality']) ??
+            _qualityFromText(el.text) ??
+            'unknown';
+        streams.add(StreamSource(
+          quality: quality,
+          kwikUrl: url,
+          audio: (a['data-audio'] ?? a['data-lang'] ?? 'jpn').trim(),
+          fileSize: '',
+          fansub: (a['data-fansub'] ?? '').trim(),
+        ));
+      }
+
+      // The download menu. Matched on the link shape rather than the container
+      // id, so a theme change that renames #pickDownload does not break it.
+      for (final el in doc.querySelectorAll('a[href]')) {
+        final href = el.attributes['href'] ?? '';
+        if (!href.contains('pahe.win') && !href.contains('/d/')) continue;
+        final text = el.text.replaceAll('·', '·');
+        final quality = _qualityFromText(text) ?? 'unknown';
+        if (quality == 'unknown') continue; // navigation links, not sources
+        downloads.add(StreamSource(
+          quality: quality,
+          kwikUrl: '',
+          downloadUrl: href,
+          audio: _audioFromText(text) ?? 'jpn',
+          fileSize: _sizeFromText(text) ?? '',
+          fansub: _fansubFromText(text) ?? '',
+        ));
       }
     } catch (_) {
       // fall through to the raw scan
     }
 
     // Raw scan: catches sources built by inline JS, which the DOM walk misses.
-    if (found.isEmpty) {
+    if (streams.isEmpty) {
       for (final m in RegExp(r'https?://[^\s"\x27\\]*kwik\.[a-z]{2,6}/[ef]/[\w-]+')
           .allMatches(html)) {
         final url = m.group(0)!;
-        // Look at a window of text after the link for a quality/audio hint.
-        final tailEnd = (m.end + 240).clamp(0, html.length);
-        final tail = html.substring(m.end, tailEnd);
-        add(url, null, _audioFromText(tail), null);
-        final q = _qualityFromText(tail);
-        if (q != null && found[url]!.quality == 'unknown') {
-          found[url] = StreamSource(
-            kwikUrl: url,
-            quality: q,
-            audio: found[url]!.audio,
-            fileSize: '',
-          );
-        }
+        final tail = html.substring(m.end, (m.end + 240).clamp(0, html.length));
+        streams.add(StreamSource(
+          quality: _qualityFromText(tail) ?? 'unknown',
+          kwikUrl: url,
+          audio: _audioFromText(tail) ?? 'jpn',
+          fileSize: '',
+        ));
       }
     }
 
-    final list = found.values.toList();
-    list.sort((a, b) {
+    return _merge(streams, downloads);
+  }
+
+  /// Pairs each stream with its download link.
+  ///
+  /// Keyed on quality and audio, preferring an exact fansub match so a page
+  /// listing two release groups at the same resolution does not attach the
+  /// wrong file. Options that exist in only one of the two menus are still
+  /// returned, marked with whichever action they support.
+  static List<StreamSource> _merge(
+      List<StreamSource> streams, List<StreamSource> downloads) {
+    final remaining = [...downloads];
+    final out = <StreamSource>[];
+
+    for (final s in streams) {
+      var i = remaining.indexWhere((d) =>
+          d.quality == s.quality &&
+          d.isDub == s.isDub &&
+          d.fansub.isNotEmpty &&
+          d.fansub == s.fansub);
+      if (i < 0) {
+        i = remaining.indexWhere(
+            (d) => d.quality == s.quality && d.isDub == s.isDub);
+      }
+      if (i < 0) {
+        out.add(s);
+        continue;
+      }
+      final d = remaining.removeAt(i);
+      out.add(s.copyWith(
+        downloadUrl: d.downloadUrl,
+        fileSize: d.fileSize,
+        fansub: s.fansub.isEmpty ? d.fansub : s.fansub,
+      ));
+    }
+
+    // A download with no matching stream is still worth offering.
+    out.addAll(remaining);
+
+    // Dedupe on the pair of links, so a page repeating a menu cannot double up.
+    final seen = <String>{};
+    final unique =
+        out.where((s) => seen.add('${s.kwikUrl}|${s.downloadUrl}')).toList();
+
+    unique.sort((a, b) {
       // Sub before dub, then highest quality first.
       final byAudio = (a.isDub ? 1 : 0) - (b.isDub ? 1 : 0);
       if (byAudio != 0) return byAudio;
       return _qualityRank(b.quality) - _qualityRank(a.quality);
     });
-    return list;
+    return unique;
   }
 
   static String? _normalizeQuality(String? raw) {
@@ -254,6 +303,21 @@ class AnimePaheApi {
     final m = RegExp(r'\b(2160|1440|1080|720|480|360)\s*p?\b', caseSensitive: false)
         .firstMatch(text);
     return m == null ? null : '${m.group(1)}p';
+  }
+
+  /// Reads "(47MB)" / "1.2 GB" out of a download label.
+  static String? _sizeFromText(String? text) {
+    if (text == null) return null;
+    final m = RegExp(r'([\d.]+\s?(?:[KMG]i?B))', caseSensitive: false)
+        .firstMatch(text);
+    return m?.group(1)?.trim();
+  }
+
+  /// The release group, which is the leading segment before the separator.
+  static String? _fansubFromText(String? text) {
+    if (text == null) return null;
+    final name = text.split('·').first.trim();
+    return name.isEmpty || name.length > 40 ? null : name;
   }
 
   static String? _audioFromText(String? text) {

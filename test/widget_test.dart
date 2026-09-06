@@ -252,4 +252,119 @@ void main() {
     );
     expect(p.progressFraction, 0);
   });
+  group('play page pairing', () {
+    // The markup below is the shape animepahe actually serves: the stream
+    // buttons carry the metadata, the download anchors carry the size and the
+    // only link that yields a file.
+    const realish = '''
+      <button type="button" data-src="https://kwik.cx/e/aaa" data-url="https://kwik.cx/e/aaa"
+              data-fansub="SubsPlease" data-resolution="360" data-audio="jpn"
+              class="dropdown-item">SubsPlease &middot; 360p</button>
+      <button type="button" data-src="https://kwik.cx/e/bbb" data-url="https://kwik.cx/e/bbb"
+              data-fansub="SubsPlease" data-resolution="1080" data-audio="jpn"
+              class="dropdown-item">SubsPlease &middot; 1080p</button>
+      <div class="dropdown-menu" id="pickDownload">
+        <a href="https://pahe.win/YlPTN" class="dropdown-item">SubsPlease &middot; 360p (20MB)</a>
+        <a href="https://pahe.win/TKcqw" class="dropdown-item">SubsPlease &middot; 1080p (70MB)</a>
+      </div>
+    ''';
+
+    test('attaches each download link and size to its stream', () {
+      final s = AnimePaheApi.parsePlayPage(realish);
+      expect(s.length, 2);
+      final hd = s.firstWhere((e) => e.quality == '1080p');
+      expect(hd.kwikUrl, 'https://kwik.cx/e/bbb');
+      expect(hd.downloadUrl, 'https://pahe.win/TKcqw');
+      expect(hd.fileSize, '70MB');
+      expect(hd.canStream, isTrue);
+      expect(hd.canDownload, isTrue);
+    });
+
+    test('a stream with no matching download is still streamable', () {
+      final s = AnimePaheApi.parsePlayPage(
+          '<button data-src="https://kwik.cx/e/x" data-resolution="720" '
+          'data-audio="jpn"></button>');
+      expect(s.single.canStream, isTrue);
+      expect(s.single.canDownload, isFalse);
+    });
+
+    test('pairs dub links to dub streams, not to the sub at that quality', () {
+      const dual = '''
+        <button data-src="https://kwik.cx/e/sub" data-resolution="720" data-audio="jpn"></button>
+        <button data-src="https://kwik.cx/e/dub" data-resolution="720" data-audio="eng"></button>
+        <a href="https://pahe.win/subfile" class="dropdown-item">Group &middot; 720p (100MB)</a>
+        <a href="https://pahe.win/dubfile" class="dropdown-item">Group &middot; 720p (200MB) eng</a>
+      ''';
+      final s = AnimePaheApi.parsePlayPage(dual);
+      final sub = s.firstWhere((e) => !e.isDub);
+      final dub = s.firstWhere((e) => e.isDub);
+      expect(sub.downloadUrl, 'https://pahe.win/subfile');
+      expect(dub.downloadUrl, 'https://pahe.win/dubfile');
+    });
+  });
+
+  group('resume point', () {
+    WatchProgress make({int last = 0, int resumeEp = 0, double pos = 0}) =>
+        WatchProgress(
+          animeSession: 's',
+          animeTitle: 't',
+          animePoster: '',
+          lastEpisode: last,
+          totalEpisodes: 12,
+          resumeEpisode: resumeEp,
+          resumePosition: pos,
+          updatedAt: DateTime(2026),
+        );
+
+    test('offers episode 1 when nothing has been watched', () {
+      expect(make().continueEpisode, 1);
+    });
+
+    test('opening an episode points there, not at the previous one', () {
+      // The reported bug: jumping to episode 4 still offered episode 1.
+      expect(make(last: 1, resumeEp: 4, pos: 0.01).continueEpisode, 4);
+    });
+
+    test('resumes a part-watched episode and shows how far in', () {
+      final p = make(last: 3, resumeEp: 4, pos: 0.43);
+      expect(p.continueEpisode, 4);
+      expect(p.hasPartialEpisode, isTrue);
+      expect(p.resumeLabel, 'EP 4 · 43%');
+    });
+
+    test('a finished episode moves on to the next one', () {
+      final p = make(last: 4, resumeEp: 4, pos: 0.95);
+      expect(p.continueEpisode, 5);
+      expect(p.hasPartialEpisode, isFalse);
+    });
+
+    test('rewatching an earlier episode does not lose the series position', () {
+      // lastEpisode is the furthest reached, so it stays put.
+      final p = make(last: 9, resumeEp: 2, pos: 0.5);
+      expect(p.lastEpisode, 9);
+      expect(p.continueEpisode, 2);
+    });
+
+    test('survives a round trip through the database map', () {
+      final p = make(last: 5, resumeEp: 6, pos: 0.25);
+      final back = WatchProgress.fromMap(p.toMap());
+      expect(back.resumeEpisode, 6);
+      expect(back.resumePosition, closeTo(0.25, 0.0001));
+      expect(back.lastEpisode, 5);
+    });
+
+    test('reads rows written before the resume columns existed', () {
+      final legacy = {
+        'anime_session': 's',
+        'anime_title': 't',
+        'anime_poster': '',
+        'last_episode': 3,
+        'total_episodes': 12,
+        'updated_at': DateTime(2026).millisecondsSinceEpoch,
+      };
+      final p = WatchProgress.fromMap(legacy);
+      expect(p.resumeEpisode, 0);
+      expect(p.continueEpisode, 4);
+    });
+  });
 }

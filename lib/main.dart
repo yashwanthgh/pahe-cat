@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'services/diagnostics.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'screens/main_shell.dart';
@@ -42,7 +43,10 @@ class _PaheCatAppState extends State<PaheCatApp> {
       home: PreviewMode.enabled
           ? const MainShell()
           : CfGatewayWidget(
-              onReady: () => setState(() => _cfReady = true),
+              onReady: () {
+                setState(() => _cfReady = true);
+                Diagnostics.dumpPlayPage();
+              },
               child: _cfReady ? const MainShell() : const _SplashScreen(),
             ),
     );

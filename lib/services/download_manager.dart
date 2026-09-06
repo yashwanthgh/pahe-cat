@@ -2,9 +2,10 @@ import 'dart:async';
 import 'dart:io';
 import 'package:dio/dio.dart';
 import 'package:flutter/foundation.dart';
-import 'package:path_provider/path_provider.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import '../models/download_item.dart';
 import 'cf_session.dart';
+import 'settings.dart';
 
 class DownloadManager extends ChangeNotifier {
   static final DownloadManager _i = DownloadManager._();
@@ -19,16 +20,13 @@ class DownloadManager extends ChangeNotifier {
     receiveTimeout: Duration.zero, // streaming — no idle cap
   ));
 
+  /// Where files are written: the folder chosen in Settings, else the
+  /// platform default. Read from storage rather than injected so the manager
+  /// stays a plain singleton, and so a change in Settings applies to the next
+  /// download without a restart.
   Future<String> get saveRoot async {
-    if (Platform.isAndroid) {
-      final dir = await getExternalStorageDirectory() ??
-          await getApplicationDocumentsDirectory();
-      return '${dir.path}/Pahe Cat';
-    }
-    final home = Platform.environment['HOME'] ??
-        Platform.environment['USERPROFILE'] ??
-        (await getApplicationDocumentsDirectory()).path;
-    return '$home/Desktop/Pahe Cat';
+    final p = await SharedPreferences.getInstance();
+    return resolveDownloadDir(p.getString('pref_download_dir') ?? '');
   }
 
   void enqueue({

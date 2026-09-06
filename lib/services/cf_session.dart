@@ -1,10 +1,12 @@
 import 'dart:async';
+import 'dart:collection';
 import 'dart:convert';
 import 'dart:typed_data';
 import 'dart:io' show Platform;
 import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
 import 'package:flutter_inappwebview/flutter_inappwebview.dart';
+import 'package:url_launcher/url_launcher.dart';
 import 'domain_resolver.dart';
 
 /// Holds the cleared Cloudflare session and runs requests through it.
@@ -183,14 +185,92 @@ class CfSession {
   }
 }
 
-enum _GateState { probing, clearing, needsUser }
-
-/// Resolves the live domain, clears Cloudflare, then keeps the cleared WebView
-/// mounted off-screen so [CfSession.fetch] can keep using it.
+/// Hides a page's own content from view without hiding the WebView.
 ///
-/// Most challenges solve themselves. One that still needs a tap after
-/// [_autoTimeout] is shown inside app chrome, rather than leaving the app on a
-/// splash screen forever.
+/// The distinction matters. Painting a Flutter overlay on top of the WebView
+/// is what broke Cloudflare on macOS: WebKit stops doing rendering work for a
+/// view it believes is covered, so the challenge never finished its
+/// JavaScript. This puts the cover *inside the page* instead — a fixed div
+/// over the document — so the WebView stays fully visible to the OS and keeps
+/// running at full speed, while animepahe's own markup stays out of sight.
+///
+/// The challenge is then lifted back above the cover by raising it and each of
+/// its ancestors, so it is still visible and clickable. `pointer-events: none`
+/// on the cover means taps reach the page regardless.
+const String kPageShadeScript = r'''
+(function () {
+  var BG = '#FCFBF9';
+  var CSS =
+    'html,body{background:' + BG + ' !important}' +
+    '#pc-shade{position:fixed;top:0;left:0;right:0;bottom:0;background:' + BG +
+    ';z-index:2147483000;pointer-events:none}';
+
+  function style() {
+    if (document.getElementById('pc-style')) return;
+    var s = document.createElement('style');
+    s.id = 'pc-style';
+    s.textContent = CSS;
+    (document.head || document.documentElement).appendChild(s);
+  }
+
+  function shade() {
+    if (!document.body || document.getElementById('pc-shade')) return;
+    var d = document.createElement('div');
+    d.id = 'pc-shade';
+    document.body.appendChild(d);
+  }
+
+  // Raise the challenge widget above the cover. Each ancestor needs its own
+  // stacking context, otherwise a z-index further down is clamped by a parent.
+  function lift() {
+    var f = document.querySelector(
+      'iframe[src*="challenges.cloudflare.com"], .cf-turnstile');
+    if (!f) return;
+    for (var el = f; el && el !== document.body; el = el.parentElement) {
+      el.style.setProperty('position', 'relative', 'important');
+      el.style.setProperty('z-index', '2147483600', 'important');
+      el.style.setProperty('background', BG, 'important');
+      el.style.setProperty('visibility', 'visible', 'important');
+    }
+  }
+
+  function apply() { style(); shade(); lift(); }
+
+  apply();
+  document.addEventListener('DOMContentLoaded', apply);
+  try {
+    new MutationObserver(apply)
+      .observe(document.documentElement, { childList: true, subtree: true });
+  } catch (e) {}
+})();
+''';
+
+/// Applied at document start so the page is never shown before it is covered.
+UnmodifiableListView<UserScript> get kShadeUserScripts =>
+    UnmodifiableListView([
+      UserScript(
+        source: kPageShadeScript,
+        injectionTime: UserScriptInjectionTime.AT_DOCUMENT_START,
+      ),
+    ]);
+
+enum _Phase { resolving, verifying, cleared }
+
+/// Resolves the live domain, gets past Cloudflare, then keeps the cleared
+/// WebView mounted so [CfSession.fetch] can keep using it.
+///
+/// The verification page is shown plainly instead of being hidden behind a
+/// splash. An earlier version tried to detect whether a person was needed and
+/// only then revealed the WebView, but that detection cannot be made reliable:
+/// Cloudflare's widget lives in a cross-origin iframe, which `querySelector`
+/// is not permitted to look inside. So the app sat behind a cover while a
+/// check waited on a click it never received. Showing the real page removes
+/// the need to detect anything — whatever Cloudflare puts up is visible, and
+/// can be acted on.
+///
+/// Mirrors are rotated as well. A host that will not clear is often replaced
+/// by one that clears with no interaction at all, so waiting on a single
+/// domain forever gives up a free fix.
 class CfGatewayWidget extends StatefulWidget {
   final VoidCallback onReady;
   final Widget child;
@@ -202,25 +282,44 @@ class CfGatewayWidget extends StatefulWidget {
 }
 
 class _CfGatewayWidgetState extends State<CfGatewayWidget> {
-  /// Cloudflare's managed challenge often spends 15-20s on "Verifying…" before
-  /// clearing itself. A shorter wait pushes the interactive frame in front of a
-  /// check that was about to pass on its own.
-  static const _autoTimeout = Duration(seconds: 35);
+  /// How long one mirror gets before the next is tried. Cloudflare's managed
+  /// challenge usually clears itself within about 15s, so this waits past that
+  /// before concluding this host is not going to co-operate.
+  static const _perHostTimeout = Duration(seconds: 20);
 
-  /// Pins the WebView's element identity so a rebuild cannot recreate it.
+  /// The gap between clearance probes. Short, because the cleared site is
+  /// visible behind the panel until a probe notices, and a long gap leaves the
+  /// raw animepahe page on screen for no reason.
+  static const _pollInterval = Duration(milliseconds: 1500);
+
+  /// Pins the WebView's element identity. Re-parenting it made Flutter dispose
+  /// the element and take the cleared session with it, so its ancestor chain is
+  /// built once and never varies.
   final _webViewKey = GlobalKey();
 
-  /// Captured at creation. The view is built before the domain is known, so
-  /// the first navigation has to be issued through the controller rather than
-  /// initialUrlRequest, which is only read when the view is created.
-  InAppWebViewController? _gateController;
-  bool _navigated = false;
+  InAppWebViewController? _controller;
 
-  _GateState _state = _GateState.probing;
-  bool _cleared = false;
-  Timer? _timer;
+  _Phase _phase = _Phase.resolving;
+
+  /// Mirrors to work through, resolved host first.
+  List<String> _order = const [];
+  int _hostIndex = 0;
+
+  /// Set on the first touch inside the WebView. Rotating mirrors underneath
+  /// somebody who is part-way through solving a check would throw away their
+  /// progress, so automatic rotation stops once they have engaged with it.
+  bool _userInteracted = false;
+
+  /// True once every mirror has been tried, which turns the panel into a
+  /// manual one rather than rotating in circles.
+  bool _exhausted = false;
+
+  /// Last probe result, shown on screen. Release builds have no console, so
+  /// without this a stuck gate is undiagnosable from a user's report.
+  String _diag = '';
+
+  Timer? _hostTimer;
   Timer? _poll;
-  String? _url;
 
   @override
   void initState() {
@@ -230,146 +329,104 @@ class _CfGatewayWidgetState extends State<CfGatewayWidget> {
 
   @override
   void dispose() {
-    _timer?.cancel();
+    _hostTimer?.cancel();
     _poll?.cancel();
     super.dispose();
   }
 
   Future<void> _start() async {
     await DomainResolver.loadCached();
-    await DomainResolver.resolve();
+    final resolved = await DomainResolver.resolve();
     if (!mounted) return;
-    setState(() {
-      _url = DomainResolver.base;
-      _state = _GateState.clearing;
-    });
-    _navigateWhenReady();
-    _timer = Timer(_autoTimeout, () {
-      if (!_cleared && mounted) setState(() => _state = _GateState.needsUser);
-    });
+    _order = [
+      resolved,
+      ...DomainResolver.candidates.where((h) => h != resolved),
+    ];
+    _useHost(0);
   }
 
-  /// Runs on both paths — controller ready and URL ready — because either can
-  /// land first, and navigation needs both.
-  Future<void> _navigateWhenReady() async {
-    final c = _gateController;
-    final url = _url;
-    if (c == null || url == null || _navigated) return;
-    _navigated = true;
-    debugPrint('CFGATE: navigating to $url');
+  void _useHost(int index) {
+    _hostIndex = index;
+    DomainResolver.use(_order[index]);
+    if (!mounted) return;
+    setState(() {
+      _phase = _Phase.verifying;
+      _diag = '';
+    });
+    _navigate();
+  }
+
+  /// Navigation is imperative because the WebView is built before the domain
+  /// is known, and `initialUrlRequest` is only read when the view is created.
+  /// Either the controller or the host can arrive first, so both paths call
+  /// this and it does nothing until both are present.
+  Future<void> _navigate() async {
+    final c = _controller;
+    if (c == null || _phase != _Phase.verifying) return;
+    final url = DomainResolver.base;
+    debugPrint('CFGATE: -> $url (${_hostIndex + 1}/${_order.length})');
+    _armHostTimer();
+    _startPolling();
     await c.loadUrl(urlRequest: URLRequest(url: WebUri(url)));
   }
 
-  Future<void> _onLoadStop(InAppWebViewController c, WebUri? url) async {
-    debugPrint('CFGATE: onLoadStop url=$url');
-    if (_cleared) return;
+  void _armHostTimer() {
+    _hostTimer?.cancel();
+    if (_exhausted) return;
+    _hostTimer = Timer(_perHostTimeout, _rotate);
+  }
 
+  /// Moves to the next mirror. [manual] wraps around and ignores the
+  /// interaction guard, since an explicit tap on "Try another server" is a
+  /// request to move regardless.
+  void _rotate({bool manual = false}) {
+    if (!mounted || _phase == _Phase.cleared) return;
+    if (!manual && _userInteracted) return;
+
+    final next = _hostIndex + 1;
+    if (next >= _order.length) {
+      if (manual) {
+        _userInteracted = false;
+        _useHost(0);
+      } else {
+        _hostTimer?.cancel();
+        setState(() => _exhausted = true);
+      }
+      return;
+    }
+    if (manual) _userInteracted = false;
+    _useHost(next);
+  }
+
+  Future<void> _onLoadStop(InAppWebViewController c, WebUri? url) async {
+    if (_phase == _Phase.cleared) return;
     final landed = url?.host;
     if (landed != null) await DomainResolver.adoptFromWebView(landed);
-
-    await _reportStorageCapability(c);
-    _startWatching(c);
+    // Probe straight away as well as on the timer: a mirror that needs no
+    // challenge at all is already cleared by the time it finishes loading, and
+    // waiting for the next tick would show it the raw site for no reason.
+    await _check();
   }
 
-  /// Cloudflare's challenge has to persist state to finish. If the sandbox is
-  /// blocking cookies or localStorage it can never complete, which is
-  /// indistinguishable from a stalled challenge.
-  Future<void> _reportStorageCapability(InAppWebViewController c) async {
-    try {
-      final r = await c.evaluateJavascript(source: '''
-        (function () {
-          var out = [];
-          try {
-            localStorage.setItem('__pc', '1');
-            out.push('ls=' + (localStorage.getItem('__pc') === '1'));
-          } catch (e) { out.push('ls=throw'); }
-          try {
-            document.cookie = '__pc=1; path=/';
-            out.push('ck=' + (document.cookie.indexOf('__pc=1') >= 0));
-          } catch (e) { out.push('ck=throw'); }
-          out.push('cookieEnabled=' + navigator.cookieEnabled);
-          out.push('ua=' + navigator.userAgent.slice(0, 90));
-          return out.join(' | ');
-        })()
-      ''');
-      debugPrint('CFGATE: storage -> $r');
-    } catch (e) {
-      debugPrint('CFGATE: storage check threw $e');
-    }
-  }
-
-  /// Polls until Cloudflare lets us through.
-  ///
-  /// Checking once on onLoadStop was the central bug: the "Just a moment"
-  /// interstitial finishes its work several seconds later, in JavaScript, so
-  /// a single immediate probe always saw 403. Android happened to work only
-  /// because its challenge ended in a page navigation, which fired a second
-  /// onLoadStop; macOS clears in place, so nothing ever re-checked.
-  void _startWatching(InAppWebViewController c) {
+  void _startPolling() {
     _poll?.cancel();
-    _poll = Timer.periodic(const Duration(seconds: 2), (t) async {
-      if (!mounted || _cleared) {
-        t.cancel();
-        return;
-      }
-
-      if (await _looksCleared(c)) {
-        t.cancel();
-        _cleared = true;
-        _timer?.cancel();
-        await CfSession().attach(c);
-        if (mounted) {
-          setState(() {});
-          widget.onReady();
-        }
-        return;
-      }
-
-      // Turnstile injects its widget after the page settles, so this only
-      // becomes true partway through — hence checking on every tick.
-      if (await _hasInteractiveChallenge(c) &&
-          _state != _GateState.needsUser &&
-          mounted) {
-        _timer?.cancel();
-        setState(() => _state = _GateState.needsUser);
-      }
-    });
+    _poll = Timer.periodic(_pollInterval, (_) => _check());
   }
 
-  /// True when the page is showing something a person has to click.
+  /// Checks whether Cloudflare has let us through, and if so hands the cleared
+  /// controller to [CfSession] and releases the app.
   ///
-  /// Uses evaluateJavascript rather than callAsyncJavaScript, which is the
-  /// better supported of the two across platforms.
-  Future<bool> _hasInteractiveChallenge(InAppWebViewController c) async {
-    try {
-      final r = await c.evaluateJavascript(source: '''
-        (function () {
-          var frame = document.querySelector(
-            'iframe[src*="challenges.cloudflare.com"]');
-          var box = document.querySelector('input[type=checkbox]');
-          return (frame || box) ? '1' : '0';
-        })()
-      ''');
-      final found = r?.toString().trim() == '1';
-      debugPrint('CFGATE: interactive challenge present=$found');
-      return found;
-    } catch (e) {
-      debugPrint('CFGATE: interactive check threw $e');
-      return false;
-    }
-  }
+  /// The API call is the only signal consulted. Inspecting the page for
+  /// Cloudflare markers does not work — Cloudflare injects its
+  /// `/cdn-cgi/challenge-platform/` script into ordinary protected pages too,
+  /// so a marker check matches on a perfectly cleared page. The API answers
+  /// with JSON exactly when we are through, and nothing else does.
+  Future<void> _check() async {
+    if (!mounted || _phase == _Phase.cleared) return;
+    final c = _controller;
+    if (c == null) return;
 
-  /// Confirms clearance by calling the API. Nothing else is consulted.
-  ///
-  /// An earlier version rejected the page first if its HTML contained a
-  /// Cloudflare marker, which never worked: Cloudflare injects a
-  /// `/cdn-cgi/challenge-platform/...` script into ordinary protected pages,
-  /// not only interstitials. That matched on a perfectly cleared page, so this
-  /// returned false forever and the probe below never ran.
-  ///
-  /// The probe is the only thing that actually matters — the API answers with
-  /// JSON exactly when Cloudflare has let us through.
-  Future<bool> _looksCleared(InAppWebViewController c) async {
+    String result;
     try {
       final probe = await c.callAsyncJavaScript(functionBody: r'''
         const r = await fetch('/api?m=airing&page=1', {
@@ -381,47 +438,75 @@ class _CfGatewayWidgetState extends State<CfGatewayWidget> {
         const t = (await r.text()).trim();
         return t.startsWith('{') || t.startsWith('[') ? 'ok' : 'notjson';
       ''');
-      final value = probe?.value;
-      debugPrint('CFGATE: probe=$value error=${probe?.error}');
-      return value == 'ok';
+      result = probe?.error != null
+          ? 'error:${probe!.error}'
+          : '${probe?.value ?? 'null'}';
     } catch (e) {
-      debugPrint('CFGATE: probe threw $e');
-      return false;
+      result = 'threw:$e';
+    }
+
+    debugPrint('CFGATE: probe=$result host=${DomainResolver.host}');
+    if (!mounted || _phase == _Phase.cleared) return;
+
+    if (result != 'ok') {
+      setState(() => _diag = result);
+      return;
+    }
+
+    _phase = _Phase.cleared;
+    _poll?.cancel();
+    _hostTimer?.cancel();
+    await CfSession().attach(c);
+    if (!mounted) return;
+    setState(() {});
+    widget.onReady();
+  }
+
+  Future<void> _reload() async {
+    _userInteracted = false;
+    setState(() => _diag = '');
+    _armHostTimer();
+    _startPolling();
+    await _controller?.loadUrl(
+        urlRequest: URLRequest(url: WebUri(DomainResolver.base)));
+  }
+
+  Future<void> _openInBrowser() async {
+    final uri = Uri.parse(DomainResolver.base);
+    if (await canLaunchUrl(uri)) {
+      await launchUrl(uri, mode: LaunchMode.externalApplication);
     }
   }
 
   @override
   Widget build(BuildContext context) {
-    final ready = CfSession().isReady;
-    final interactive = _state == _GateState.needsUser && !ready;
-    const headerHeight = 96.0;
+    final cleared = _phase == _Phase.cleared && CfSession().isReady;
 
-    // Child order is fixed so the WebView keeps one identity and one set of
-    // ancestors for the whole session. Re-parenting it made Flutter dispose
-    // the element, taking the cleared session with it.
+    // Child order never varies, so the WebView keeps one identity and one set
+    // of ancestors for the whole session — including the Listener, which is
+    // unconditional for exactly that reason.
     return Stack(
       children: [
-        // Full size from the very first frame, never 1x1. Cloudflare's
-        // Turnstile runs its own checks on the rendering environment, and a
-        // one-pixel viewport reads as a bot, so the challenge would loop
-        // instead of completing. It stays full size and simply gets covered.
+        // Full size from the first frame, never one pixel. Turnstile inspects
+        // its own rendering environment and treats a tiny viewport as a bot,
+        // so the challenge would loop instead of completing. It stays full
+        // size and simply gets covered once we are through.
         Positioned.fill(
-          child: IgnorePointer(
-            ignoring: !interactive,
+          child: Listener(
+            onPointerDown: (_) => _userInteracted = true,
             child: InAppWebView(
               key: _webViewKey,
               onWebViewCreated: (c) {
-                _gateController = c;
-                _navigateWhenReady();
+                _controller = c;
+                _navigate();
               },
+              initialUserScripts: kShadeUserScripts,
               initialSettings: InAppWebViewSettings(
                 userAgent: CfSession.webViewUserAgent,
                 // WKWebView's own UA stops at "(KHTML, like Gecko)" with no
                 // Version/Safari suffix, which is the standard embedded-
-                // WebView fingerprint; Cloudflare rejects it as a non-browser
-                // client and its challenge never completes. This appends the
-                // suffix a real Safari sends, which is truthful here since the
-                // engine genuinely is WebKit.
+                // WebView fingerprint. This appends what a real Safari sends,
+                // which is truthful here since the engine genuinely is WebKit.
                 applicationNameForUserAgent: 'Version/17.4 Safari/605.1.15',
                 javaScriptEnabled: true,
                 domStorageEnabled: true,
@@ -429,66 +514,92 @@ class _CfGatewayWidgetState extends State<CfGatewayWidget> {
                 thirdPartyCookiesEnabled: true,
                 clearCache: false,
                 incognito: false,
+                transparentBackground: true,
               ),
               onLoadStop: _onLoadStop,
             ),
           ),
         ),
 
-        // Covers the WebView until a human is actually needed.
-        if (!interactive)
-          Positioned.fill(
-            child: ready ? widget.child : _GateSplash(message: _splashMessage),
-          ),
-
-        if (interactive)
-          const Positioned(
+        if (cleared)
+          Positioned.fill(child: widget.child)
+        else if (_phase == _Phase.resolving)
+          const Positioned.fill(child: _GateSplash())
+        else ...[
+          // Siblings, never parents, so appearing and disappearing cannot make
+          // Flutter rebuild the WebView underneath. They also deliberately do
+          // not cover it: the page hides its own content via kPageShadeScript,
+          // which leaves the WebView unoccluded and the challenge running.
+          Positioned(
             top: 0,
             left: 0,
             right: 0,
-            height: headerHeight,
-            child: _ChallengeHeader(),
+            child: _VerifyPanel(exhausted: _exhausted),
           ),
+          Positioned(
+            bottom: 0,
+            left: 0,
+            right: 0,
+            child: _VerifyControls(
+              host: DomainResolver.host,
+              attempt: _hostIndex + 1,
+              total: _order.length,
+              diag: _diag,
+              onReload: _reload,
+              onAnotherServer: () => _rotate(manual: true),
+              onOpenBrowser: _openInBrowser,
+            ),
+          ),
+        ],
       ],
     );
   }
-
-  String get _splashMessage => switch (_state) {
-        _GateState.probing => 'Finding a live server…',
-        _GateState.clearing => 'Getting things ready…',
-        _GateState.needsUser => 'Waiting for the check…',
-      };
 }
 
-/// Sits above the challenge WebView as a sibling, so it can appear and
-/// disappear without ever re-parenting the WebView.
-class _ChallengeHeader extends StatelessWidget {
-  const _ChallengeHeader();
+/// The visible "prove you are human" screen.
+///
+/// Deliberately plain. The page behind it is blanked to the same colour by
+/// [kPageShadeScript], so this reads as one screen of the app rather than a
+/// banner stuck over somebody else's website — which is what the earlier
+/// version looked like.
+class _VerifyPanel extends StatelessWidget {
+  final bool exhausted;
+  const _VerifyPanel({required this.exhausted});
 
   @override
   Widget build(BuildContext context) {
     return ColoredBox(
-      color: const Color(0xFFFCFBF9),
+      color: _bg,
       child: SafeArea(
         bottom: false,
         child: Padding(
-          padding: const EdgeInsets.fromLTRB(20, 8, 20, 8),
+          padding: const EdgeInsets.fromLTRB(28, 34, 28, 22),
           child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            mainAxisAlignment: MainAxisAlignment.center,
             children: [
+              const Text('\u{1F43E}', style: TextStyle(fontSize: 34)),
+              const SizedBox(height: 14),
               Text(
-                'One quick check',
-                style: TextStyle(
-                  fontSize: 17,
+                exhausted ? 'Almost there' : 'Just checking you are human',
+                textAlign: TextAlign.center,
+                style: const TextStyle(
+                  fontSize: 20,
                   fontWeight: FontWeight.w800,
-                  color: Color(0xFF3A342F),
+                  color: _ink,
                 ),
               ),
-              SizedBox(height: 2),
+              const SizedBox(height: 7),
               Text(
-                'Tap the box below once to confirm you are human.',
-                style: TextStyle(fontSize: 12, color: Color(0xFF7A716A)),
+                exhausted
+                    ? 'Tick the box below if one is showing, or try another '
+                        'server.'
+                    : 'If a box appears below, tick it once. Usually this '
+                        'sorts itself out and disappears on its own.',
+                textAlign: TextAlign.center,
+                style: const TextStyle(
+                  fontSize: 13,
+                  color: _muted,
+                  height: 1.4,
+                ),
               ),
             ],
           ),
@@ -498,33 +609,124 @@ class _ChallengeHeader extends StatelessWidget {
   }
 }
 
-class _GateSplash extends StatelessWidget {
-  final String message;
-  const _GateSplash({required this.message});
+/// Escape hatches, kept at the bottom so they never sit over the checkbox.
+class _VerifyControls extends StatelessWidget {
+  final String host;
+  final int attempt;
+  final int total;
+  final String diag;
+  final VoidCallback onReload;
+  final VoidCallback onAnotherServer;
+  final VoidCallback onOpenBrowser;
+
+  const _VerifyControls({
+    required this.host,
+    required this.attempt,
+    required this.total,
+    required this.diag,
+    required this.onReload,
+    required this.onAnotherServer,
+    required this.onOpenBrowser,
+  });
 
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
-      backgroundColor: const Color(0xFFFCFBF9),
+    return ColoredBox(
+      color: _bg,
+      child: SafeArea(
+        top: false,
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(20, 14, 20, 14),
+          child: Column(
+            children: [
+              Wrap(
+                spacing: 6,
+                runSpacing: 6,
+                alignment: WrapAlignment.center,
+                children: [
+                  _Chip(label: 'Reload', onTap: onReload),
+                  _Chip(label: 'Try another server', onTap: onAnotherServer),
+                  _Chip(label: 'Open in browser', onTap: onOpenBrowser),
+                ],
+              ),
+              const SizedBox(height: 8),
+              // Shown on screen because release builds have no console: a
+              // stuck gate is otherwise undiagnosable from a bug report.
+              Text(
+                diag.isEmpty
+                    ? '$host  ·  server $attempt of $total'
+                    : '$host  ·  server $attempt of $total  ·  $diag',
+                style: const TextStyle(fontSize: 10, color: _muted),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+const _ink = Color(0xFF3A342F);
+const _muted = Color(0xFF7A716A);
+const _bg = Color(0xFFFCFBF9);
+
+class _Chip extends StatelessWidget {
+  final String label;
+  final VoidCallback onTap;
+  const _Chip({required this.label, required this.onTap});
+
+  @override
+  Widget build(BuildContext context) {
+    return Material(
+      color: const Color(0xFFF2EEE8),
+      borderRadius: BorderRadius.circular(20),
+      child: InkWell(
+        borderRadius: BorderRadius.circular(20),
+        onTap: onTap,
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+          child: Text(
+            label,
+            style: const TextStyle(
+              fontSize: 11,
+              fontWeight: FontWeight.w700,
+              color: Color(0xFF6B615A),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _GateSplash extends StatelessWidget {
+  const _GateSplash();
+
+  @override
+  Widget build(BuildContext context) {
+    return const Scaffold(
+      backgroundColor: Color(0xFFFCFBF9),
       body: Center(
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            const Text(
+            Text('🐾', style: TextStyle(fontSize: 40)),
+            SizedBox(height: 10),
+            Text(
               'Pahe Cat',
               style: TextStyle(
-                fontSize: 38,
+                fontSize: 34,
                 fontWeight: FontWeight.w800,
                 color: Color(0xFF3A342F),
               ),
             ),
-            const SizedBox(height: 6),
+            SizedBox(height: 6),
             Text(
-              message,
-              style: const TextStyle(fontSize: 13, color: Color(0xFF7A716A)),
+              'Finding a live server…',
+              style: TextStyle(fontSize: 13, color: Color(0xFF7A716A)),
             ),
-            const SizedBox(height: 26),
-            const SizedBox(
+            SizedBox(height: 26),
+            SizedBox(
               width: 150,
               child: LinearProgressIndicator(
                 backgroundColor: Color(0xFFE8E3DC),

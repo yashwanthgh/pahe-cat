@@ -32,6 +32,16 @@ class DomainResolver {
   static String get origin => base;
   static String get referer => '$base/';
 
+  /// The known mirrors, for callers that want to work through them.
+  ///
+  /// These domains do not share one Cloudflare configuration — the same client
+  /// is waved through by one and handed a challenge by another — so the gate
+  /// tries them in turn rather than treating a single host as the only option.
+  static List<String> get candidates => _candidates;
+
+  /// Switches the active host. Used when the gate rotates mirrors.
+  static Future<void> use(String h) => _save(h);
+
   static final _probe = Dio(BaseOptions(
     connectTimeout: const Duration(seconds: 6),
     receiveTimeout: const Duration(seconds: 6),

@@ -1,16 +1,16 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_animate/flutter_animate.dart';
-import 'package:url_launcher/url_launcher.dart';
 import '../models/anime.dart';
 import '../models/episode.dart';
 import '../models/stream_source.dart';
-import '../models/watch_progress.dart';
 import '../services/animepahe_api.dart';
 import '../services/kwik_resolver.dart';
 import '../services/download_manager.dart';
 import '../services/providers.dart';
+import '../services/settings.dart';
 import '../services/watch_progress_db.dart';
+import 'web_player_screen.dart';
 import '../theme.dart';
 
 final _sourcesProvider =
@@ -57,6 +57,7 @@ class _EpisodePlayerScreenState extends ConsumerState<EpisodePlayerScreen> {
           anime: widget.anime,
           episode: widget.episode,
           sources: list,
+          settings: ref.watch(settingsProvider),
           isResolving: _isResolving,
           onWatch: (src) => _watch(context, src),
           onDownload: (src) => _download(context, src),
@@ -79,48 +80,51 @@ class _EpisodePlayerScreenState extends ConsumerState<EpisodePlayerScreen> {
       ? widget.anime.episodes
       : widget.episode.number;
 
+  /// Opens the episode in the in-app player.
+  ///
+  /// The kwik embed does the playing. There is no URL to hand to an external
+  /// app: kwik streams HLS through hls.js, so the video element is fed from a
+  /// MediaSource and its `src` is a `blob:` URL that means nothing outside
+  /// that page. Handing that to url_launcher is what made "watch" do nothing.
   Future<void> _watch(BuildContext ctx, StreamSource src) async {
-    setState(() => _isResolving = true);
-    try {
-      final directUrl = await KwikResolver.resolve(ctx, src.kwikUrl);
-
-      // Hands the stream to whatever the OS uses for video — VLC or MX Player
-      // on Android, the default handler on desktop. url_launcher cannot set a
-      // Referer, so a player that is refused should download and play locally.
-      final launched = await launchUrl(
-        Uri.parse(directUrl),
-        mode: LaunchMode.externalApplication,
-      );
-
-      if (!launched) {
-        _toast('No app available to play this. Try downloading it instead.',
-            error: true);
-        return;
-      }
-
-      // Only recorded once playback actually started, so backing out of this
-      // screen does not mark the episode watched.
-      await WatchProgressDb.save(WatchProgress(
-        animeSession: widget.anime.session,
-        animeTitle: widget.anime.title,
-        animePoster: widget.anime.poster,
-        lastEpisode: widget.episode.number,
-        totalEpisodes: _totalEpisodes,
-        updatedAt: DateTime.now(),
-      ));
-      ref.invalidate(watchProgressProvider(widget.anime.session));
-      _toast('Playing EP ${widget.episode.number}');
-    } catch (e) {
-      _toast('Could not start playback: $e', error: true);
-    } finally {
-      if (mounted) setState(() => _isResolving = false);
+    if (!src.canStream) {
+      _toast('This option can only be downloaded, not streamed.', error: true);
+      return;
     }
+
+    await Navigator.of(ctx).push(MaterialPageRoute(
+      builder: (_) => WebPlayerScreen(
+        kwikUrl: src.kwikUrl,
+        title: widget.anime.title,
+        subtitle: '${widget.episode.displayTitle} · ${src.label}',
+        // Reported when the player closes, so the recorded position is the
+        // furthest point actually reached.
+        onProgress: (fraction) => WatchProgressDb.saveEpisode(
+          animeSession: widget.anime.session,
+          animeTitle: widget.anime.title,
+          animePoster: widget.anime.poster,
+          episodeNumber: widget.episode.number,
+          totalEpisodes: _totalEpisodes,
+          position: fraction,
+        ),
+      ),
+    ));
+
+    if (!mounted) return;
+    ref.invalidate(watchProgressProvider(widget.anime.session));
+    ref.invalidate(watchHistoryProvider);
   }
 
   Future<void> _download(BuildContext ctx, StreamSource src) async {
     setState(() => _isResolving = true);
     try {
-      final url = await KwikResolver.resolve(ctx, src.kwikUrl);
+      if (!src.canDownload) {
+        _toast('animepahe lists no download for this option.', error: true);
+        return;
+      }
+      // The download menu's link, never the embed: only this route ends at a
+      // real file.
+      final url = await KwikResolver.resolve(ctx, src.downloadUrl);
       DownloadManager().enqueue(
         animeTitle: widget.anime.title,
         episodeNumber: widget.episode.number,
@@ -128,7 +132,7 @@ class _EpisodePlayerScreenState extends ConsumerState<EpisodePlayerScreen> {
         totalEpisodes: _totalEpisodes,
         quality: src.quality,
         audio: src.audioLabel,
-        kwikUrl: src.kwikUrl,
+        kwikUrl: src.downloadUrl,
         resolvedUrl: url,
       );
       _toast('Added EP ${widget.episode.number} to downloads');
@@ -144,6 +148,7 @@ class _SourcePicker extends StatefulWidget {
   final Anime anime;
   final Episode episode;
   final List<StreamSource> sources;
+  final AppSettings settings;
   final bool isResolving;
   final ValueChanged<StreamSource> onWatch;
   final ValueChanged<StreamSource> onDownload;
@@ -152,6 +157,7 @@ class _SourcePicker extends StatefulWidget {
     required this.anime,
     required this.episode,
     required this.sources,
+    required this.settings,
     required this.isResolving,
     required this.onWatch,
     required this.onDownload,
@@ -162,8 +168,18 @@ class _SourcePicker extends StatefulWidget {
 }
 
 class _SourcePickerState extends State<_SourcePicker> {
-  String _audioFilter = 'sub';
+  late String _audioFilter;
   String? _qualityFilter;
+
+  @override
+  void initState() {
+    super.initState();
+    // Start on the saved preference, but only where it actually exists for
+    // this episode — otherwise the picker opens on an empty list.
+    final wantDub = widget.settings.prefersDub;
+    _audioFilter =
+        (wantDub && widget.sources.any((s) => s.isDub)) ? 'dub' : 'sub';
+  }
 
   List<StreamSource> get _filtered => widget.sources
       .where((s) =>
@@ -171,10 +187,17 @@ class _SourcePickerState extends State<_SourcePicker> {
           (_qualityFilter == null || s.quality == _qualityFilter))
       .toList();
 
-  Set<String> get _availableQualities =>
-      widget.sources.map((s) => s.quality).toSet();
+  /// Ordered high to low, so the quality chips are not in hash order.
+  List<String> get _availableQualities {
+    final set = widget.sources.map((s) => s.quality).toSet().toList();
+    set.sort((a, b) =>
+        (int.tryParse(b.replaceAll(RegExp(r'[^0-9]'), '')) ?? -1) -
+        (int.tryParse(a.replaceAll(RegExp(r'[^0-9]'), '')) ?? -1));
+    return set;
+  }
 
   bool get _hasDub => widget.sources.any((s) => s.isDub);
+  bool get _hasSub => widget.sources.any((s) => !s.isDub);
 
   @override
   Widget build(BuildContext context) {
@@ -236,34 +259,46 @@ class _SourcePickerState extends State<_SourcePicker> {
           ).animate().fadeIn(),
           const SizedBox(height: 20),
 
-          // Audio toggle (sub/dub)
-          if (_hasDub) ...[
-            const Text('Audio',
-                style: TextStyle(
-                    color: PaheColors.textMuted,
-                    fontSize: 11,
-                    fontWeight: FontWeight.w800,
-                    letterSpacing: 1)),
-            const SizedBox(height: 8),
-            Row(
-              children: [
-                _ToggleBtn(
-                  label: 'SUB',
-                  active: _audioFilter == 'sub',
-                  color: PaheColors.info,
-                  onTap: () => setState(() => _audioFilter = 'sub'),
-                ),
-                const SizedBox(width: 8),
-                _ToggleBtn(
-                  label: 'DUB',
-                  active: _audioFilter == 'dub',
-                  color: PaheColors.accent2,
-                  onTap: () => setState(() => _audioFilter = 'dub'),
+          // Audio choice. Always shown, with whatever this episode does not
+          // offer visibly disabled — hiding the row entirely read as the
+          // feature being missing rather than the dub not existing.
+          const Text('Audio',
+              style: TextStyle(
+                  color: PaheColors.textMuted,
+                  fontSize: 11,
+                  fontWeight: FontWeight.w800,
+                  letterSpacing: 1)),
+          const SizedBox(height: 8),
+          Row(
+            children: [
+              _ToggleBtn(
+                label: 'SUB',
+                active: _audioFilter == 'sub',
+                color: PaheColors.info,
+                enabled: _hasSub,
+                onTap: () => setState(() => _audioFilter = 'sub'),
+              ),
+              const SizedBox(width: 8),
+              _ToggleBtn(
+                label: 'DUB',
+                active: _audioFilter == 'dub',
+                color: PaheColors.accent2,
+                enabled: _hasDub,
+                onTap: () => setState(() => _audioFilter = 'dub'),
+              ),
+              if (!_hasDub) ...[
+                const SizedBox(width: 10),
+                const Expanded(
+                  child: Text(
+                    'No dub for this episode',
+                    style: TextStyle(
+                        color: PaheColors.textMuted, fontSize: 11),
+                  ),
                 ),
               ],
-            ),
-            const SizedBox(height: 20),
-          ],
+            ],
+          ),
+          const SizedBox(height: 20),
 
           // Quality options
           const Text('Quality',
@@ -319,6 +354,10 @@ class _ToggleBtn extends StatelessWidget {
   final String label;
   final bool active;
   final Color color;
+
+  /// A choice this episode does not offer is shown greyed rather than removed,
+  /// so its absence reads as "not available here" instead of "not built".
+  final bool enabled;
   final VoidCallback onTap;
 
   const _ToggleBtn({
@@ -326,12 +365,15 @@ class _ToggleBtn extends StatelessWidget {
     required this.active,
     required this.color,
     required this.onTap,
+    this.enabled = true,
   });
 
   @override
   Widget build(BuildContext context) {
-    return GestureDetector(
-      onTap: onTap,
+    return Opacity(
+      opacity: enabled ? 1 : 0.4,
+      child: GestureDetector(
+      onTap: enabled ? onTap : null,
       child: AnimatedContainer(
         duration: const Duration(milliseconds: 150),
         padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
@@ -351,6 +393,7 @@ class _ToggleBtn extends StatelessWidget {
             fontWeight: FontWeight.w800,
           ),
         ),
+      ),
       ),
     );
   }

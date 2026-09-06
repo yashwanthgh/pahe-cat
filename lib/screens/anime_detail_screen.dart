@@ -244,9 +244,17 @@ class _ContinueButton extends StatelessWidget {
 
   int get _lastWatched => progress?.lastEpisode ?? 0;
 
-  /// Episode numbers can skip (specials, gaps), so take the next that exists
-  /// rather than assuming lastWatched + 1 is present.
+  /// The episode to reopen: the part-watched one if there is one, otherwise
+  /// the next unwatched. Resuming matters most in the middle of a long series,
+  /// which is where stopping halfway through an episode is most likely.
+  int get _targetNumber => progress?.continueEpisode ?? 1;
+
+  /// Episode numbers can skip (specials, gaps), so take the target if it
+  /// exists and otherwise the next one that does.
   Episode? get _loadedTarget {
+    for (final e in state.episodes) {
+      if (e.number == _targetNumber) return e;
+    }
     for (final e in state.episodes) {
       if (e.number > _lastWatched) return e;
     }
@@ -254,7 +262,7 @@ class _ContinueButton extends StatelessWidget {
   }
 
   EpisodeRange? get _rangeHoldingNext {
-    final next = _lastWatched + 1;
+    final next = _targetNumber;
     for (final r in state.ranges) {
       if (next >= r.firstEpisode && next <= r.lastEpisode) return r;
     }
@@ -274,7 +282,7 @@ class _ContinueButton extends StatelessWidget {
         final range = _rangeHoldingNext;
         if (range != null) {
           return _Banner(
-            label: 'Continue — EP ${_lastWatched + 1}',
+            label: 'Continue — EP $_targetNumber',
             trailing: 'in ${range.label}',
             onTap: () => onJumpToRange(range),
           );
@@ -300,13 +308,16 @@ class _ContinueButton extends StatelessWidget {
       );
     }
 
+    final partial = progress?.hasPartialEpisode ?? false;
     return _Banner(
-      label: _lastWatched > 0
+      label: _lastWatched > 0 || partial
           ? 'Continue — EP ${target.number}'
           : 'Start watching — EP ${target.number}',
-      trailing: _lastWatched > 0
-          ? '$_lastWatched watched'
-          : (state.total > 0 ? '${state.total} eps' : null),
+      trailing: partial
+          ? '${((progress?.resumePosition ?? 0) * 100).round()}% through'
+          : (_lastWatched > 0
+              ? '$_lastWatched watched'
+              : (state.total > 0 ? '${state.total} eps' : null)),
       onTap: () => Navigator.push(
         context,
         MaterialPageRoute(

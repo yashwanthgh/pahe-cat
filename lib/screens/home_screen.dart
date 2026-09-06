@@ -3,6 +3,8 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:shimmer/shimmer.dart';
 import '../models/anime.dart';
+import '../models/watch_progress.dart';
+import '../services/providers.dart';
 import '../services/animepahe_api.dart';
 import '../theme.dart';
 import '../widgets/anime_card.dart';
@@ -93,7 +95,15 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
               onSubmitted: _submitNow,
             ),
             Expanded(
-              child: query.isEmpty ? _RecentGrid() : _SearchResults(query: query),
+              child: query.isEmpty
+                  ? ListView(
+                      padding: EdgeInsets.zero,
+                      children: [
+                        const _ContinueWatchingRow(),
+                        _RecentGrid(shrinkWrap: true),
+                      ],
+                    )
+                  : _SearchResults(query: query),
             ),
           ],
         ),
@@ -183,12 +193,148 @@ class _SearchBar extends ConsumerWidget {
   }
 }
 
+/// Picks up where the viewer left off.
+///
+/// animepahe has no accounts, so this local record is the whole reason the app
+/// exists. It sits at the top of the home screen because it is the thing most
+/// often wanted on opening the app — previously it lived only on the Library
+/// tab and on each series' own page, which made it easy to miss.
+class _ContinueWatchingRow extends ConsumerWidget {
+  const _ContinueWatchingRow();
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final history = ref.watch(watchHistoryProvider);
+    return history.maybeWhen(
+      orElse: () => const SizedBox.shrink(),
+      data: (list) {
+        final unfinished = list
+            .where((p) => p.totalEpisodes == 0 || p.lastEpisode < p.totalEpisodes)
+            .take(12)
+            .toList();
+        if (unfinished.isEmpty) return const SizedBox.shrink();
+
+        return Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Padding(
+              padding: EdgeInsets.fromLTRB(20, 12, 20, 10),
+              child: Text(
+                'Continue watching',
+                style: TextStyle(
+                  color: PaheColors.textPrimary,
+                  fontSize: 16,
+                  fontWeight: FontWeight.w800,
+                ),
+              ),
+            ),
+            SizedBox(
+              height: 96,
+              child: ListView.separated(
+                scrollDirection: Axis.horizontal,
+                padding: const EdgeInsets.symmetric(horizontal: 16),
+                itemCount: unfinished.length,
+                separatorBuilder: (_, __) => const SizedBox(width: 10),
+                itemBuilder: (_, i) => _ContinueCard(progress: unfinished[i]),
+              ),
+            ),
+            const SizedBox(height: 6),
+          ],
+        );
+      },
+    );
+  }
+}
+
+class _ContinueCard extends StatelessWidget {
+  final WatchProgress progress;
+  const _ContinueCard({required this.progress});
+
+  @override
+  Widget build(BuildContext context) {
+    return SizedBox(
+      width: 230,
+      child: Material(
+        color: PaheColors.card,
+        borderRadius: BorderRadius.circular(14),
+        child: InkWell(
+          borderRadius: BorderRadius.circular(14),
+          // Opens the series page, where the episode list and the resume point
+          // both live.
+          onTap: () => Navigator.push(
+            context,
+            MaterialPageRoute(
+              builder: (_) => AnimeDetailScreen(
+                anime: Anime.fromHistory(
+                  session: progress.animeSession,
+                  title: progress.animeTitle,
+                  poster: progress.animePoster,
+                ),
+              ),
+            ),
+          ),
+          child: Padding(
+            padding: const EdgeInsets.all(12),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              children: [
+                Text(
+                  progress.animeTitle,
+                  maxLines: 2,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(
+                    color: PaheColors.textPrimary,
+                    fontSize: 13,
+                    fontWeight: FontWeight.w700,
+                    height: 1.25,
+                  ),
+                ),
+                Row(
+                  children: [
+                    const Icon(Icons.play_circle_fill_rounded,
+                        color: PaheColors.accent, size: 16),
+                    const SizedBox(width: 6),
+                    Expanded(
+                      child: Text(
+                        progress.resumeLabel,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: const TextStyle(
+                          color: PaheColors.textSecondary,
+                          fontSize: 11,
+                          fontWeight: FontWeight.w600,
+                        ),
+                      ),
+                    ),
+                    if (progress.totalEpisodes > 0)
+                      Text(
+                        progress.progressLabel,
+                        style: const TextStyle(
+                            color: PaheColors.textMuted, fontSize: 10),
+                      ),
+                  ],
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
 class _RecentGrid extends ConsumerWidget {
+  /// Nested inside a scrolling list on the home screen, so it must not try to
+  /// scroll or size itself to infinity.
+  final bool shrinkWrap;
+  const _RecentGrid({this.shrinkWrap = false});
+
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final recent = ref.watch(_recentProvider);
     return recent.when(
-      loading: () => _ShimmerGrid(),
+      loading: () => _ShimmerGrid(shrinkWrap: shrinkWrap),
       error: (e, _) => _ErrorState(message: e.toString()),
       data: (list) => Column(
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -205,23 +351,31 @@ class _RecentGrid extends ConsumerWidget {
               ),
             ),
           ),
-          Expanded(
-            child: LayoutBuilder(
+          // Expanded only works inside a Column with bounded height. Nested
+          // in the home screen's scrolling list there is no such bound, so the
+          // grid sizes to its content there instead.
+          _maybeExpanded(
+            LayoutBuilder(
               builder: (ctx, box) => GridView.builder(
-              padding: const EdgeInsets.symmetric(horizontal: 12),
-              gridDelegate: _posterGridFor(box.maxWidth - 24),
-              itemCount: list.length,
-              itemBuilder: (ctx, i) => AnimeCard(
-                anime: list[i],
-                onTap: () => _open(context, list[i]),
+                padding: const EdgeInsets.symmetric(horizontal: 12),
+                gridDelegate: _posterGridFor(box.maxWidth - 24),
+                itemCount: list.length,
+                shrinkWrap: shrinkWrap,
+                physics: shrinkWrap ? const NeverScrollableScrollPhysics() : null,
+                itemBuilder: (ctx, i) => AnimeCard(
+                  anime: list[i],
+                  onTap: () => _open(context, list[i]),
+                ),
               ),
-            ),
             ),
           ),
         ],
       ),
     );
   }
+
+  Widget _maybeExpanded(Widget child) =>
+      shrinkWrap ? child : Expanded(child: child);
 
   void _open(BuildContext ctx, Anime a) {
     Navigator.push(ctx, MaterialPageRoute(builder: (_) => AnimeDetailScreen(anime: a)));
@@ -270,6 +424,11 @@ class _SearchResults extends ConsumerWidget {
 }
 
 class _ShimmerGrid extends StatelessWidget {
+  /// Must not scroll or size to infinity when nested in the home screen's own
+  /// scrolling list, which is unbounded vertically.
+  final bool shrinkWrap;
+  const _ShimmerGrid({this.shrinkWrap = false});
+
   @override
   Widget build(BuildContext context) {
     return LayoutBuilder(
@@ -277,6 +436,8 @@ class _ShimmerGrid extends StatelessWidget {
       padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
       gridDelegate: _posterGridFor(box.maxWidth - 24),
       itemCount: 9,
+      shrinkWrap: shrinkWrap,
+      physics: shrinkWrap ? const NeverScrollableScrollPhysics() : null,
       itemBuilder: (_, __) => Shimmer.fromColors(
         baseColor: PaheColors.card,
         highlightColor: PaheColors.cardHover,

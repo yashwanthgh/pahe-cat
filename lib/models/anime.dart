@@ -24,6 +24,21 @@ class Anime {
     required this.slug,
   });
 
+  /// Rebuilt from a stored watch-progress row, which keeps only the three
+  /// fields needed to reopen the series. The rest is refetched on the detail
+  /// screen rather than duplicated into the history table.
+  const Anime.fromHistory({
+    required this.session,
+    required this.title,
+    required this.poster,
+  })  : type = 'TV',
+        episodes = 0,
+        status = '',
+        season = '',
+        year = 0,
+        score = 0,
+        slug = '';
+
   factory Anime.fromJson(Map<String, dynamic> j) => Anime(
         session: j['session'] ?? '',
         title: j['title'] ?? '',
