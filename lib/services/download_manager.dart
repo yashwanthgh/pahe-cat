@@ -158,6 +158,21 @@ class DownloadManager extends ChangeNotifier {
     notifyListeners();
   }
 
+  /// The live download for one episode of one series, if any.
+  ///
+  /// Looked up by episode rather than by the full item id so a tile can show
+  /// its state without knowing which quality or audio was queued.
+  DownloadItem? forEpisode(String animeSession, int episodeNumber) {
+    for (final item in queue) {
+      if (item.animeSession == animeSession &&
+          item.episodeNumber == episodeNumber &&
+          (item.isActive || item.isCompleted)) {
+        return item;
+      }
+    }
+    return null;
+  }
+
   /// Active items grouped by the action that queued them, newest group last.
   /// Singles are grouped under an empty key.
   Map<String, List<DownloadItem>> get activeByBatch {

@@ -313,7 +313,10 @@ class _WideLayout extends ConsumerWidget {
                             : _EpisodeGrid(
                                 anime: anime,
                                 parts: parts,
-                                episodes: episodes.episodes,
+                                // The page's own episodes, not everything
+                                // fetched: an API page straddles the boundary,
+                                // so 60 arrive for a page ending at 50.
+                                episodes: episodes.visibleEpisodes,
                               ),
                   ),
                 ],
@@ -1109,6 +1112,88 @@ class _EpisodeGridState extends ConsumerState<_EpisodeGrid> {
   }
 }
 
+/// The download control on an episode tile.
+///
+/// Disabled once that episode is queued or downloading: offering the same
+/// download again is the wrong invitation, and the dedupe behind it would
+/// silently ignore the tap anyway. A finished one shows as finished.
+class _DownloadAction extends StatelessWidget {
+  final DownloadItem? item;
+  final Episode episode;
+  final ValueChanged<Episode> onDownload;
+
+  const _DownloadAction({
+    required this.item,
+    required this.episode,
+    required this.onDownload,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final d = item;
+
+    if (d != null && d.isCompleted) {
+      return const Padding(
+        padding: EdgeInsets.all(2),
+        child: Icon(Icons.download_done_rounded,
+            size: 17, color: PaheColors.green),
+      );
+    }
+
+    if (d != null && d.isActive) {
+      return Tooltip(
+        message: d.status == DownloadStatus.resolving
+            ? 'Finding the file…'
+            : 'Downloading — tap to cancel',
+        child: InkWell(
+          borderRadius: BorderRadius.circular(6),
+          onTap: () => DownloadManager().cancel(d),
+          child: const Padding(
+            padding: EdgeInsets.all(2),
+            child: Icon(Icons.stop_circle_outlined,
+                size: 17, color: PaheColors.accent),
+          ),
+        ),
+      );
+    }
+
+    return _CellAction(
+      icon: Icons.download_rounded,
+      tooltip: 'Download EP ${episode.number}',
+      onTap: () => onDownload(episode),
+    );
+  }
+}
+
+/// The tile's bar, showing a download rather than the watch position.
+class _DownloadBar extends StatelessWidget {
+  final DownloadItem item;
+  const _DownloadBar({required this.item});
+
+  @override
+  Widget build(BuildContext context) {
+    return ListenableBuilder(
+      listenable: item,
+      builder: (context, _) {
+        // Nothing measurable yet while the link is being found, so the bar is
+        // indeterminate rather than frozen at zero.
+        final indeterminate = item.status == DownloadStatus.resolving ||
+            (item.status == DownloadStatus.downloading && item.totalBytes == 0);
+        return ClipRRect(
+          borderRadius: BorderRadius.circular(2),
+          child: LinearProgressIndicator(
+            value: indeterminate ? null : item.progress,
+            minHeight: 3,
+            backgroundColor: PaheColors.border,
+            valueColor:
+                const AlwaysStoppedAnimation<Color>(PaheColors.accent2),
+          ),
+        );
+      },
+    );
+  }
+}
+
 /// A tap target inside an episode tile.
 ///
 /// Small enough to sit two of them on one line, with its own hit area so
@@ -1151,7 +1236,7 @@ class _CellAction extends StatelessWidget {
 /// The tints are pale on purpose — saturated status colours shout on a white
 /// app — and the episode to continue from gets a heavier edge so it is
 /// findable in a grid of a hundred.
-class _EpisodeCell extends StatelessWidget {
+class _EpisodeCell extends StatefulWidget {
   final Episode episode;
   final Anime anime;
 
@@ -1171,6 +1256,36 @@ class _EpisodeCell extends StatelessWidget {
     required this.onDownload,
   });
 
+  @override
+  State<_EpisodeCell> createState() => _EpisodeCellState();
+}
+
+class _EpisodeCellState extends State<_EpisodeCell> {
+  final _manager = DownloadManager();
+
+  @override
+  void initState() {
+    super.initState();
+    // Listened to so the tile's own download button can show its state
+    // instead of inviting the same download again.
+    _manager.addListener(_onChange);
+  }
+
+  @override
+  void dispose() {
+    _manager.removeListener(_onChange);
+    super.dispose();
+  }
+
+  void _onChange() {
+    if (mounted) setState(() {});
+  }
+
+  Episode get episode => widget.episode;
+  Anime get anime => widget.anime;
+  double get position => widget.position;
+  bool get isCurrent => widget.isCurrent;
+
   bool get _finished => position >= WatchProgress.completedAt;
   bool get _started => position > 0.02 && !_finished;
 
@@ -1189,6 +1304,7 @@ class _EpisodeCell extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final download = _manager.forEpisode(anime.session, episode.number);
     return Material(
       color: _fill,
       borderRadius: BorderRadius.circular(12),
@@ -1201,7 +1317,7 @@ class _EpisodeCell extends StatelessWidget {
             builder: (_) => EpisodePlayerScreen(
               anime: anime,
               episode: episode,
-              siblings: siblings,
+              siblings: widget.siblings,
             ),
           ),
         ),
@@ -1256,12 +1372,11 @@ class _EpisodeCell extends StatelessWidget {
                   ),
                   const Spacer(),
                   // Downloading one episode used to mean long-pressing into
-                  // the picker; it is a button on the tile now.
-                  _CellAction(
-                    icon: Icons.download_rounded,
-                    tooltip: 'Download EP ${episode.number}',
-                    onTap: () => onDownload(episode),
-                  ),
+                  // the picker; it is a button on the tile now, and it reports
+                  // what its own download is doing rather than offering the
+                  // same download again.
+                  _DownloadAction(item: download, episode: episode,
+                      onDownload: widget.onDownload),
                   const SizedBox(width: 2),
                   _CellAction(
                     icon: isCurrent
@@ -1277,17 +1392,24 @@ class _EpisodeCell extends StatelessWidget {
               const SizedBox(height: 7),
               // A hairline rather than a full bar: at this size a thick bar
               // crowds the two lines of text above it.
-              ClipRRect(
-                borderRadius: BorderRadius.circular(2),
-                child: LinearProgressIndicator(
-                  value: position.clamp(0.0, 1.0),
-                  minHeight: 3,
-                  backgroundColor: PaheColors.border,
-                  valueColor: AlwaysStoppedAnimation<Color>(
-                    _finished ? PaheColors.green : PaheColors.accent,
+              //
+              // While a download is in flight this bar reports the download
+              // instead of the watch position — that is the thing changing,
+              // and it is the reason the tile was tapped.
+              if (download != null && download.isActive)
+                _DownloadBar(item: download)
+              else
+                ClipRRect(
+                  borderRadius: BorderRadius.circular(2),
+                  child: LinearProgressIndicator(
+                    value: position.clamp(0.0, 1.0),
+                    minHeight: 3,
+                    backgroundColor: PaheColors.border,
+                    valueColor: AlwaysStoppedAnimation<Color>(
+                      _finished ? PaheColors.green : PaheColors.accent,
+                    ),
                   ),
                 ),
-              ),
             ],
           ),
         ),

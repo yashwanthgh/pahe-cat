@@ -114,14 +114,16 @@ class _LibraryTile extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return Container(
-      margin: const EdgeInsets.only(bottom: 10),
-      decoration: BoxDecoration(
-        color: PaheColors.card,
-        borderRadius: BorderRadius.circular(16),
-        border: Border.all(color: PaheColors.border),
-      ),
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 10),
       child: ListTile(
+        // Colour and border belong on the tile: a ListTile paints its own
+        // background over an ancestor's, which Flutter asserts about.
+        tileColor: PaheColors.card,
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(16),
+          side: const BorderSide(color: PaheColors.border),
+        ),
         contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
         leading: ClipRRect(
           borderRadius: BorderRadius.circular(10),
