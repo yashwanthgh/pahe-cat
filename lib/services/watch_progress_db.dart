@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'package:sqflite/sqflite.dart';
 import 'package:path/path.dart';
 import '../models/watch_progress.dart';
@@ -5,6 +6,23 @@ import 'preview_data.dart';
 
 class WatchProgressDb {
   static Database? _db;
+
+  /// Announces that stored progress changed.
+  ///
+  /// Screens cannot rely on the writer invalidating their caches. Progress is
+  /// written from the player's own teardown, and from a route that has
+  /// already been replaced by the player — its State is disposed by then, so
+  /// any "if still mounted, invalidate" step is simply skipped, and the
+  /// history list kept showing stale rows and a zeroed progress bar. Anything
+  /// displaying progress listens here instead.
+  static final _changes = StreamController<int>.broadcast();
+  static Stream<int> get changes => _changes.stream;
+  static int _revision = 0;
+
+  static void _announce() {
+    _revision++;
+    if (!_changes.isClosed) _changes.add(_revision);
+  }
 
   /// sqflite has no web implementation, so the design preview keeps progress
   /// in memory for the session instead of throwing on every screen.
@@ -74,6 +92,7 @@ class WatchProgressDb {
   static Future<void> save(WatchProgress p) async {
     if (PreviewMode.enabled) {
       _memory[p.animeSession] = p;
+      _announce();
       return;
     }
     final d = await db;
@@ -82,6 +101,7 @@ class WatchProgressDb {
       p.toMap(),
       conflictAlgorithm: ConflictAlgorithm.replace,
     );
+    _announce();
   }
 
   /// Records a position within one episode and rolls the series summary
@@ -199,6 +219,7 @@ class WatchProgressDb {
     if (PreviewMode.enabled) {
       _memory.remove(animeSession);
       _epMemory.removeWhere((k, _) => k.startsWith('$animeSession/'));
+      _announce();
       return;
     }
     final d = await db;
@@ -206,5 +227,6 @@ class WatchProgressDb {
         where: 'anime_session = ?', whereArgs: [animeSession]);
     await d.delete('episode_progress',
         where: 'anime_session = ?', whereArgs: [animeSession]);
+    _announce();
   }
 }

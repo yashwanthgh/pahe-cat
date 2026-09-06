@@ -6,14 +6,24 @@ import '../models/watch_progress.dart';
 import 'animepahe_api.dart';
 import 'watch_progress_db.dart';
 
+/// Rebuilds anything showing progress whenever stored progress changes.
+///
+/// Watched rather than invalidated by hand: progress is written from the
+/// player's teardown and from a route already replaced by the player, so
+/// there is no live widget left to do the invalidating.
+final progressRevisionProvider =
+    StreamProvider<int>((ref) => WatchProgressDb.changes);
+
 /// Shared so the player screen can invalidate it after an episode is watched
 /// and the detail screen's checkmarks update without an app restart.
 final watchProgressProvider =
     FutureProvider.family<WatchProgress?, String>((ref, animeSession) {
+  ref.watch(progressRevisionProvider);
   return WatchProgressDb.get(animeSession);
 });
 
 final watchHistoryProvider = FutureProvider<List<WatchProgress>>((ref) {
+  ref.watch(progressRevisionProvider);
   return WatchProgressDb.getAll();
 });
 

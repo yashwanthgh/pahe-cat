@@ -345,6 +345,30 @@ void main() {
       expect(p.continueEpisode, 2);
     });
 
+    test('the bar moves during the first episode, not only after it', () {
+      // Counting finished episodes alone left the bar on zero for the whole
+      // of episode 1, which reads as nothing having been recorded.
+      final started = make(last: 0, resumeEp: 1, pos: 0.5);
+      expect(started.progressFraction, closeTo(0.5 / 12, 0.0001));
+    });
+
+    test('a part-watched episode adds to the finished ones', () {
+      final p = make(last: 3, resumeEp: 4, pos: 0.5);
+      expect(p.progressFraction, closeTo(3.5 / 12, 0.0001));
+    });
+
+    test('rewatching an earlier episode does not inflate the bar', () {
+      // resumeEpisode is behind lastEpisode here, so it must not be added on
+      // top of the episodes already finished.
+      final p = make(last: 9, resumeEp: 2, pos: 0.5);
+      expect(p.progressFraction, closeTo(9 / 12, 0.0001));
+    });
+
+    test('never exceeds a full bar', () {
+      final p = make(last: 12, resumeEp: 13, pos: 0.9);
+      expect(p.progressFraction, 1.0);
+    });
+
     test('survives a round trip through the database map', () {
       final p = make(last: 5, resumeEp: 6, pos: 0.25);
       final back = WatchProgress.fromMap(p.toMap());

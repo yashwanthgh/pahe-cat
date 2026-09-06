@@ -33,8 +33,19 @@ class WatchProgress {
     this.resumePosition = 0,
   });
 
-  double get progressFraction =>
-      totalEpisodes > 0 ? lastEpisode / totalEpisodes : 0;
+  /// Series progress, counting a part-watched episode as the fraction of it
+  /// that has been seen.
+  ///
+  /// Using completed episodes alone left the bar reading zero all the way
+  /// through the first episode, which looks like nothing was recorded.
+  double get progressFraction {
+    if (totalEpisodes <= 0) return 0;
+    var episodes = lastEpisode.toDouble();
+    if (resumeEpisode > lastEpisode && resumePosition > 0) {
+      episodes += resumePosition.clamp(0.0, 1.0);
+    }
+    return (episodes / totalEpisodes).clamp(0.0, 1.0);
+  }
 
   String get progressLabel => '$lastEpisode / $totalEpisodes ep';
 
