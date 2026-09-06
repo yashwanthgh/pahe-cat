@@ -2,6 +2,7 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter_inappwebview/flutter_inappwebview.dart';
 import 'cf_session.dart';
+import 'domain_resolver.dart';
 
 /// Resolves a kwik.si/e/<hash> URL to a direct download/stream URL.
 /// Uses an invisible WebView to POST the form (required by kwik anti-hotlink).
@@ -62,7 +63,7 @@ class _KwikWebViewState extends State<_KwikWebView> {
         initialUrlRequest: URLRequest(
           url: WebUri(widget.kwikUrl),
           headers: {
-            'Referer': 'https://animepahe.ru/',
+            'Referer': DomainResolver.referer,
             'User-Agent': CfSession().userAgent,
           },
         ),

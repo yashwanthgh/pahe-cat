@@ -9,9 +9,24 @@ permissions:
   contents: write
 
 jobs:
+  # ── Gate: fail fast before spending 4 platform builds ────────────────────
+  check:
+    name: Analyze & Test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.47.2'
+          channel: stable
+      - run: flutter pub get
+      - run: flutter analyze --no-fatal-infos --no-fatal-warnings
+      - run: flutter test
+
   # ── Android APK ──────────────────────────────────────────────────────────
   android:
     name: Android APK
+    needs: check
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -21,7 +36,7 @@ jobs:
           java-version: '17'
       - uses: subosito/flutter-action@v2
         with:
-          flutter-version: '3.32.2'
+          flutter-version: '3.47.2'
           channel: stable
       - run: flutter pub get
       - run: flutter build apk --release --split-per-abi
@@ -33,12 +48,13 @@ jobs:
   # ── macOS ─────────────────────────────────────────────────────────────────
   macos:
     name: macOS App
+    needs: check
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
       - uses: subosito/flutter-action@v2
         with:
-          flutter-version: '3.32.2'
+          flutter-version: '3.47.2'
           channel: stable
       - run: flutter pub get
       - run: flutter build macos --release
@@ -54,12 +70,13 @@ jobs:
   # ── Windows ───────────────────────────────────────────────────────────────
   windows:
     name: Windows EXE
+    needs: check
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
       - uses: subosito/flutter-action@v2
         with:
-          flutter-version: '3.32.2'
+          flutter-version: '3.47.2'
           channel: stable
       - run: flutter pub get
       - run: flutter build windows --release
@@ -74,6 +91,7 @@ jobs:
   # ── Linux ─────────────────────────────────────────────────────────────────
   linux:
     name: Linux Build
+    needs: check
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -82,7 +100,7 @@ jobs:
           sudo apt-get install -y clang cmake ninja-build pkg-config libgtk-3-dev liblzma-dev
       - uses: subosito/flutter-action@v2
         with:
-          flutter-version: '3.32.2'
+          flutter-version: '3.47.2'
           channel: stable
       - run: flutter pub get
       - run: flutter build linux --release

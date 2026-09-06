@@ -82,7 +82,7 @@ class PaheTheme {
         ),
         iconTheme: const IconThemeData(color: PaheColors.textSecondary),
       ),
-      cardTheme: CardTheme(
+      cardTheme: CardThemeData(
         color: PaheColors.card,
         elevation: 0,
         shape: RoundedRectangleBorder(

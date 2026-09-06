@@ -126,7 +126,6 @@ class DownloadManager extends ChangeNotifier {
             status: DownloadStatus.completed,
             progress: 1.0,
             statusMessage: 'Done',
-            outputPath: outPath,
           );
         },
         cancelOnError: true,

@@ -3,15 +3,16 @@ import '../models/anime.dart';
 import '../models/episode.dart';
 import '../models/stream_source.dart';
 import 'cf_session.dart';
+import 'domain_resolver.dart';
 
 class AnimePaheApi {
   static final AnimePaheApi _i = AnimePaheApi._();
   AnimePaheApi._();
   factory AnimePaheApi() => _i;
 
-  static const _base = 'https://animepahe.ru';
+  // No baseUrl — the domain can change between calls, so every request builds
+  // its URL from the currently resolved host.
   late final Dio _dio = Dio(BaseOptions(
-    baseUrl: _base,
     connectTimeout: const Duration(seconds: 15),
     receiveTimeout: const Duration(seconds: 30),
   ));
@@ -20,7 +21,7 @@ class AnimePaheApi {
 
   Future<List<Anime>> search(String query) async {
     final r = await _dio.get(
-      '/api',
+      '${DomainResolver.base}/api',
       queryParameters: {'m': 'search', 'q': query},
       options: _opts,
     );
@@ -31,7 +32,7 @@ class AnimePaheApi {
   Future<({List<Episode> episodes, int totalPages, int currentPage})>
       getEpisodes(String animeSession, {int page = 1}) async {
     final r = await _dio.get(
-      '/api',
+      '${DomainResolver.base}/api',
       queryParameters: {
         'm': 'release',
         'id': animeSession,
@@ -46,15 +47,15 @@ class AnimePaheApi {
         .toList();
     return (
       episodes: episodes,
-      totalPages: r.data['last_page'] ?? 1,
-      currentPage: r.data['current_page'] ?? 1,
+      totalPages: (r.data['last_page'] as int?) ?? 1,
+      currentPage: (r.data['current_page'] as int?) ?? 1,
     );
   }
 
   /// Fetches the play page and extracts all kwik.si sources grouped by quality/audio.
   Future<List<StreamSource>> getSources(
       String animeSession, String episodeSession) async {
-    final url = '$_base/play/$animeSession/$episodeSession';
+    final url = '${DomainResolver.base}/play/$animeSession/$episodeSession';
     final r = await _dio.get(url, options: _opts);
     return _parsePlayPage(r.data as String);
   }
@@ -105,7 +106,7 @@ class AnimePaheApi {
 
   Future<List<Anime>> getRecent({int page = 1}) async {
     final r = await _dio.get(
-      '/api',
+      '${DomainResolver.base}/api',
       queryParameters: {'m': 'airing', 'page': page},
       options: _opts,
     );
