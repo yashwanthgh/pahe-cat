@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_animate/flutter_animate.dart';
+import 'package:url_launcher/url_launcher.dart';
 import '../models/anime.dart';
 import '../models/episode.dart';
 import '../models/stream_source.dart';
@@ -8,6 +9,7 @@ import '../models/watch_progress.dart';
 import '../services/animepahe_api.dart';
 import '../services/kwik_resolver.dart';
 import '../services/download_manager.dart';
+import '../services/providers.dart';
 import '../services/watch_progress_db.dart';
 import '../theme.dart';
 
@@ -27,8 +29,6 @@ class EpisodePlayerScreen extends ConsumerStatefulWidget {
 }
 
 class _EpisodePlayerScreenState extends ConsumerState<EpisodePlayerScreen> {
-  String? _selectedAudio; // 'sub' or 'dub'
-  String? _selectedQuality;
   bool _isResolving = false;
 
   @override
@@ -65,66 +65,78 @@ class _EpisodePlayerScreenState extends ConsumerState<EpisodePlayerScreen> {
     );
   }
 
+  void _toast(String msg, {bool error = false}) {
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+      content: Text(msg),
+      backgroundColor: error ? PaheColors.red : PaheColors.purple,
+    ));
+  }
+
+  /// The series total is 0 on entries that came from the airing feed, which
+  /// would render the library bar permanently empty.
+  int get _totalEpisodes => widget.anime.episodes > widget.episode.number
+      ? widget.anime.episodes
+      : widget.episode.number;
+
   Future<void> _watch(BuildContext ctx, StreamSource src) async {
     setState(() => _isResolving = true);
     try {
       final directUrl = await KwikResolver.resolve(ctx, src.kwikUrl);
-      if (!ctx.mounted) return;
-      // Save watch progress
+
+      // Hands the stream to whatever the OS uses for video — VLC or MX Player
+      // on Android, the default handler on desktop. url_launcher cannot set a
+      // Referer, so a player that is refused should download and play locally.
+      final launched = await launchUrl(
+        Uri.parse(directUrl),
+        mode: LaunchMode.externalApplication,
+      );
+
+      if (!launched) {
+        _toast('No app available to play this. Try downloading it instead.',
+            error: true);
+        return;
+      }
+
+      // Only recorded once playback actually started, so backing out of this
+      // screen does not mark the episode watched.
       await WatchProgressDb.save(WatchProgress(
         animeSession: widget.anime.session,
         animeTitle: widget.anime.title,
         animePoster: widget.anime.poster,
         lastEpisode: widget.episode.number,
-        totalEpisodes: widget.anime.episodes,
+        totalEpisodes: _totalEpisodes,
         updatedAt: DateTime.now(),
       ));
-      if (!ctx.mounted) return;
-      // Open in external player
-      // ignore: use_build_context_synchronously
-      ScaffoldMessenger.of(ctx).showSnackBar(
-        SnackBar(
-          content: Text('Opening EP ${widget.episode.number}…'),
-          backgroundColor: PaheColors.purple,
-        ),
-      );
+      ref.invalidate(watchProgressProvider(widget.anime.session));
+      _toast('Playing EP ${widget.episode.number}');
     } catch (e) {
-      if (!ctx.mounted) return;
-      ScaffoldMessenger.of(ctx).showSnackBar(
-        SnackBar(
-          content: Text('Error: $e'),
-          backgroundColor: PaheColors.red,
-        ),
-      );
+      _toast('Could not start playback: $e', error: true);
     } finally {
       if (mounted) setState(() => _isResolving = false);
     }
   }
 
-  void _download(BuildContext ctx, StreamSource src) {
-    KwikResolver.resolve(ctx, src.kwikUrl).then((url) {
+  Future<void> _download(BuildContext ctx, StreamSource src) async {
+    setState(() => _isResolving = true);
+    try {
+      final url = await KwikResolver.resolve(ctx, src.kwikUrl);
       DownloadManager().enqueue(
         animeTitle: widget.anime.title,
         episodeNumber: widget.episode.number,
+        episodeTitle: widget.episode.title,
+        totalEpisodes: _totalEpisodes,
         quality: src.quality,
         audio: src.audioLabel,
         kwikUrl: src.kwikUrl,
         resolvedUrl: url,
       );
-      ScaffoldMessenger.of(ctx).showSnackBar(
-        const SnackBar(
-          content: Text('Added to downloads'),
-          backgroundColor: PaheColors.purple,
-        ),
-      );
-    }).catchError((e) {
-      ScaffoldMessenger.of(ctx).showSnackBar(
-        SnackBar(
-          content: Text('Failed: $e'),
-          backgroundColor: PaheColors.red,
-        ),
-      );
-    });
+      _toast('Added EP ${widget.episode.number} to downloads');
+    } catch (e) {
+      _toast('Could not queue download: $e', error: true);
+    } finally {
+      if (mounted) setState(() => _isResolving = false);
+    }
   }
 }
 

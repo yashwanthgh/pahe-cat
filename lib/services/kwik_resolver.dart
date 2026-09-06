@@ -53,7 +53,6 @@ class _KwikWebView extends StatefulWidget {
 }
 
 class _KwikWebViewState extends State<_KwikWebView> {
-  InAppWebViewController? _wv;
 
   @override
   Widget build(BuildContext context) {
@@ -72,7 +71,6 @@ class _KwikWebViewState extends State<_KwikWebView> {
           userAgent: CfSession().userAgent,
           allowFileAccessFromFileURLs: false,
         ),
-        onWebViewCreated: (c) => _wv = c,
         shouldOverrideUrlLoading: (c, action) async {
           final url = action.request.url?.toString() ?? '';
           // Direct video file → we have it

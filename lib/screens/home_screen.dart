@@ -1,10 +1,10 @@
+import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_animate/flutter_animate.dart';
 import 'package:shimmer/shimmer.dart';
 import '../models/anime.dart';
 import '../services/animepahe_api.dart';
-import '../services/watch_progress_db.dart';
 import '../theme.dart';
 import '../widgets/anime_card.dart';
 import 'anime_detail_screen.dart';
@@ -28,11 +28,32 @@ class HomeScreen extends ConsumerStatefulWidget {
 
 class _HomeScreenState extends ConsumerState<HomeScreen> {
   final _ctrl = TextEditingController();
+  Timer? _debounce;
 
   @override
   void dispose() {
+    _debounce?.cancel();
     _ctrl.dispose();
     super.dispose();
+  }
+
+  /// Without this every keystroke fired a search request, which wastes the
+  /// Cloudflare clearance we just spent a handshake on.
+  void _onQueryChanged(String value) {
+    _debounce?.cancel();
+    final trimmed = value.trim();
+    if (trimmed.isEmpty) {
+      ref.read(_searchQueryProvider.notifier).state = '';
+      return;
+    }
+    _debounce = Timer(const Duration(milliseconds: 400), () {
+      if (mounted) ref.read(_searchQueryProvider.notifier).state = trimmed;
+    });
+  }
+
+  void _submitNow(String value) {
+    _debounce?.cancel();
+    ref.read(_searchQueryProvider.notifier).state = value.trim();
   }
 
   @override
@@ -45,7 +66,11 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             _Header(),
-            _SearchBar(ctrl: _ctrl),
+            _SearchBar(
+              ctrl: _ctrl,
+              onChanged: _onQueryChanged,
+              onSubmitted: _submitNow,
+            ),
             Expanded(
               child: query.isEmpty ? _RecentGrid() : _SearchResults(query: query),
             ),
@@ -100,7 +125,14 @@ class _Header extends ConsumerWidget {
 
 class _SearchBar extends ConsumerWidget {
   final TextEditingController ctrl;
-  const _SearchBar({required this.ctrl});
+  final ValueChanged<String> onChanged;
+  final ValueChanged<String> onSubmitted;
+
+  const _SearchBar({
+    required this.ctrl,
+    required this.onChanged,
+    required this.onSubmitted,
+  });
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
@@ -122,8 +154,8 @@ class _SearchBar extends ConsumerWidget {
                 )
               : null,
         ),
-        onChanged: (v) => ref.read(_searchQueryProvider.notifier).state = v,
-        onSubmitted: (v) => ref.read(_searchQueryProvider.notifier).state = v,
+        onChanged: onChanged,
+        onSubmitted: onSubmitted,
         textInputAction: TextInputAction.search,
       ),
     );

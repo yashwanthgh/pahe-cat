@@ -46,3 +46,4 @@ linux/flutter/generated_plugins.cmake
 # OS
 .DS_Store
 Thumbs.db
+tools/out/

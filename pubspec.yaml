@@ -14,8 +14,10 @@ dependencies:
   dio: ^5.4.3
   html: ^0.15.4
 
-  # WebView (CF bypass + kwik.si resolution)
-  flutter_inappwebview: ^6.0.0
+  # WebView (CF bypass + kwik.si resolution).
+  # 6.1+ is required: the android sub-package in 6.0.0 referenced the old
+  # proguard-android.txt, which modern Android Gradle Plugin rejects outright.
+  flutter_inappwebview: ^6.1.5
 
   # Local DB — watch progress, history
   sqflite: ^2.3.2
@@ -41,8 +43,26 @@ dev_dependencies:
   flutter_test:
     sdk: flutter
   flutter_lints: ^3.0.0
+  flutter_launcher_icons: ^0.13.1
 
 flutter:
   uses-material-design: true
   assets:
     - assets/images/
+    - assets/icon/
+
+# Regenerate with: dart run flutter_launcher_icons
+# Source art comes from tools/make_icon.py
+flutter_launcher_icons:
+  image_path: "assets/icon/icon.png"
+  android: true
+  adaptive_icon_background: "#0A0A14"
+  adaptive_icon_foreground: "assets/icon/icon_foreground.png"
+  ios: true
+  remove_alpha_ios: true
+  macos:
+    generate: true
+    image_path: "assets/icon/icon.png"
+  windows:
+    generate: true
+    image_path: "assets/icon/icon.png"

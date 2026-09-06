@@ -1,9 +1,74 @@
+import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flutter_animate/flutter_animate.dart';
+import 'package:open_filex/open_filex.dart';
 import 'package:percent_indicator/linear_percent_indicator.dart';
 import '../models/download_item.dart';
 import '../services/download_manager.dart';
 import '../theme.dart';
+
+Future<void> _open(BuildContext context, DownloadItem item) async {
+  final result = await OpenFilex.open(item.outputPath);
+  if (result.type != ResultType.done && context.mounted) {
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+      content: Text('Could not open: ${result.message}'),
+      backgroundColor: PaheColors.red,
+    ));
+  }
+}
+
+/// Selects the file in the OS file browser rather than opening it.
+Future<void> _reveal(BuildContext context, DownloadItem item) async {
+  final path = item.outputPath;
+  try {
+    if (Platform.isMacOS) {
+      await Process.run('open', ['-R', path]);
+    } else if (Platform.isWindows) {
+      await Process.run('explorer', ['/select,', path]);
+    } else if (Platform.isLinux) {
+      await Process.run('xdg-open', [File(path).parent.path]);
+    } else {
+      // Android has no file-manager reveal intent; open the file instead.
+      await OpenFilex.open(path);
+    }
+  } catch (e) {
+    if (context.mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+        content: Text('Could not reveal file: $e'),
+        backgroundColor: PaheColors.red,
+      ));
+    }
+  }
+}
+
+class _IconAction extends StatelessWidget {
+  final IconData icon;
+  final String tooltip;
+  final Color color;
+  final VoidCallback onTap;
+
+  const _IconAction({
+    required this.icon,
+    required this.tooltip,
+    required this.color,
+    required this.onTap,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Tooltip(
+      message: tooltip,
+      child: InkWell(
+        onTap: onTap,
+        borderRadius: BorderRadius.circular(8),
+        child: Padding(
+          padding: const EdgeInsets.all(4),
+          child: Icon(icon, color: color, size: 18),
+        ),
+      ),
+    );
+  }
+}
 
 class DownloadsScreen extends StatelessWidget {
   const DownloadsScreen({super.key});
@@ -158,11 +223,32 @@ class _DownloadTile extends StatelessWidget {
                 ),
               ),
               if (item.canRetry)
-                GestureDetector(
-                  onTap: () {/* retry logic */},
-                  child: const Icon(Icons.refresh_rounded,
-                      color: PaheColors.purple, size: 18),
+                _IconAction(
+                  icon: Icons.refresh_rounded,
+                  tooltip: 'Retry',
+                  color: PaheColors.purple,
+                  onTap: () => DownloadManager().retry(item),
                 ),
+              if (item.isCompleted) ...[
+                _IconAction(
+                  icon: Icons.play_arrow_rounded,
+                  tooltip: 'Play',
+                  color: PaheColors.green,
+                  onTap: () => _open(context, item),
+                ),
+                _IconAction(
+                  icon: Icons.folder_open_rounded,
+                  tooltip: 'Show in folder',
+                  color: PaheColors.textSecondary,
+                  onTap: () => _reveal(context, item),
+                ),
+              ],
+              _IconAction(
+                icon: Icons.close_rounded,
+                tooltip: 'Remove from list',
+                color: PaheColors.textMuted,
+                onTap: () => DownloadManager().remove(item),
+              ),
             ],
           ),
           if (isActive || item.status == DownloadStatus.downloading) ...[

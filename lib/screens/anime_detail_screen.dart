@@ -6,20 +6,9 @@ import 'package:flutter_animate/flutter_animate.dart';
 import '../models/anime.dart';
 import '../models/episode.dart';
 import '../models/watch_progress.dart';
-import '../services/animepahe_api.dart';
-import '../services/watch_progress_db.dart';
+import '../services/providers.dart';
 import '../theme.dart';
 import 'episode_player_screen.dart';
-
-final _episodesProvider = FutureProvider.family<List<Episode>, String>(
-    (ref, session) => AnimePaheApi()
-        .getEpisodes(session)
-        .then((r) => r.episodes));
-
-final _progressProvider =
-    FutureProvider.family<WatchProgress?, String>((ref, session) async {
-  return WatchProgressDb.get(session);
-});
 
 class AnimeDetailScreen extends ConsumerWidget {
   final Anime anime;
@@ -27,8 +16,8 @@ class AnimeDetailScreen extends ConsumerWidget {
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
-    final episodes = ref.watch(_episodesProvider(anime.session));
-    final progress = ref.watch(_progressProvider(anime.session));
+    final episodes = ref.watch(episodesProvider(anime.session));
+    final progress = ref.watch(watchProgressProvider(anime.session));
 
     return Scaffold(
       backgroundColor: PaheColors.bg,
@@ -70,12 +59,10 @@ class AnimeDetailScreen extends ConsumerWidget {
                   const SizedBox(height: 8),
                   _InfoRow(anime: anime),
                   // Continue watching button
-                  progress.when(
-                    loading: () => const SizedBox.shrink(),
-                    error: (_, __) => const SizedBox.shrink(),
-                    data: (p) => p != null
-                        ? _ContinueButton(anime: anime, progress: p)
-                        : const SizedBox.shrink(),
+                  _ContinueButton(
+                    anime: anime,
+                    progress: progress.valueOrNull,
+                    episodes: episodes.valueOrNull ?? const [],
                   ),
                   const SizedBox(height: 20),
                   const Text(
@@ -208,23 +195,70 @@ class _Chip extends StatelessWidget {
   }
 }
 
+/// Resumes at the first unwatched episode, or starts the series when there is
+/// no progress yet. Hidden while the episode list is still loading, since
+/// there would be nothing to open.
 class _ContinueButton extends StatelessWidget {
   final Anime anime;
-  final WatchProgress progress;
+  final WatchProgress? progress;
+  final List<Episode> episodes;
 
-  const _ContinueButton({required this.anime, required this.progress});
+  const _ContinueButton({
+    required this.anime,
+    required this.progress,
+    required this.episodes,
+  });
+
+  Episode? get _target {
+    if (episodes.isEmpty) return null;
+    final last = progress?.lastEpisode ?? 0;
+    // Episode numbers are not always contiguous (specials, gaps), so pick the
+    // next one that exists rather than assuming last + 1 is present.
+    for (final e in episodes) {
+      if (e.number > last) return e;
+    }
+    return null; // fully watched
+  }
 
   @override
   Widget build(BuildContext context) {
+    final target = _target;
+    if (target == null) {
+      if (episodes.isEmpty) return const SizedBox.shrink();
+      return Padding(
+        padding: const EdgeInsets.only(top: 16),
+        child: Row(
+          children: [
+            const Icon(Icons.check_circle_rounded,
+                color: PaheColors.green, size: 18),
+            const SizedBox(width: 8),
+            Text(
+              'All ${episodes.length} episodes watched',
+              style: const TextStyle(
+                color: PaheColors.green,
+                fontSize: 13,
+                fontWeight: FontWeight.w700,
+              ),
+            ),
+          ],
+        ),
+      );
+    }
+
+    final resuming = (progress?.lastEpisode ?? 0) > 0;
     return Padding(
       padding: const EdgeInsets.only(top: 16),
       child: Material(
         color: Colors.transparent,
         child: InkWell(
           borderRadius: BorderRadius.circular(14),
-          onTap: () {
-            // Navigate to next episode
-          },
+          onTap: () => Navigator.push(
+            context,
+            MaterialPageRoute(
+              builder: (_) =>
+                  EpisodePlayerScreen(anime: anime, episode: target),
+            ),
+          ),
           child: Container(
             padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 14),
             decoration: BoxDecoration(
@@ -232,12 +266,14 @@ class _ContinueButton extends StatelessWidget {
               borderRadius: BorderRadius.circular(14),
             ),
             child: Row(
-              mainAxisSize: MainAxisSize.min,
               children: [
-                const Icon(Icons.play_arrow_rounded, color: Colors.white, size: 20),
+                const Icon(Icons.play_arrow_rounded,
+                    color: Colors.white, size: 20),
                 const SizedBox(width: 8),
                 Text(
-                  'Continue — EP ${progress.lastEpisode + 1}',
+                  resuming
+                      ? 'Continue — EP ${target.number}'
+                      : 'Start watching — EP ${target.number}',
                   style: const TextStyle(
                     color: Colors.white,
                     fontWeight: FontWeight.w700,
@@ -245,10 +281,11 @@ class _ContinueButton extends StatelessWidget {
                   ),
                 ),
                 const Spacer(),
-                Text(
-                  progress.progressLabel,
-                  style: const TextStyle(color: Colors.white70, fontSize: 11),
-                ),
+                if (progress != null)
+                  Text(
+                    '${progress!.lastEpisode} / ${episodes.length}',
+                    style: const TextStyle(color: Colors.white70, fontSize: 11),
+                  ),
               ],
             ),
           ),
