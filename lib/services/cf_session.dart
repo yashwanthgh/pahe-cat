@@ -234,7 +234,17 @@ const String kPageShadeScript = r'''
     }
   }
 
-  function apply() { style(); shade(); lift(); }
+  function apply() {
+    // A page that turns out to need a person seen it — a Cloudflare check, say
+    // — asks for the cover to come off, since the widget has to be visible to
+    // be ticked.
+    if (window.__pcNoShade) {
+      var existing = document.getElementById('pc-shade');
+      if (existing) existing.remove();
+      return;
+    }
+    style(); shade(); lift();
+  }
 
   apply();
   document.addEventListener('DOMContentLoaded', apply);
