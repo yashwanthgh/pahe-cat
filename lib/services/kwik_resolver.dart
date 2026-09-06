@@ -110,13 +110,45 @@ class _KwikWebViewState extends State<_KwikWebView> {
     widget.onResolved(url);
   }
 
-  /// Polls the live page for a media URL.
+  /// Hosts this flow is allowed to visit.
   ///
-  /// kwik's player is built by an obfuscated script that runs after load, so
-  /// the URL does not exist in the served HTML — it only appears once the
-  /// player has attached it to a <video> element. Checking once on load stop
-  /// therefore always came up empty; this keeps looking while the player
-  /// starts up.
+  /// `pahe.win` is an ad-gated redirector: its scripts push the main frame off
+  /// to an advertiser and it never arrives at kwik, so every resolution timed
+  /// out. Only the hosts on the actual path are followed; anything else is
+  /// refused.
+  static bool _allowed(String host) {
+    final h = host.toLowerCase();
+    return h == 'pahe.win' ||
+        h.endsWith('.pahe.win') ||
+        h.contains('kwik.') ||
+        h.contains('animepahe.');
+  }
+
+  /// Looks for the kwik download page linked from a pahe.win page.
+  ///
+  /// Following the page's own scripts means following its adverts too, so the
+  /// link is taken out of the markup and navigated to directly.
+  Future<void> _jumpToKwik(InAppWebViewController c) async {
+    try {
+      final r = await c.evaluateJavascript(source: r'''
+        (function () {
+          var a = document.querySelector('a[href*="kwik."]');
+          if (a && a.href) return a.href;
+          var m = document.documentElement.innerHTML
+                    .match(/https?:\/\/[^"'\s\<>]*kwik\.[a-z]{2,6}\/[fd]\/[\w-]+/);
+          return m ? m[0] : '';
+        })()
+      ''');
+      final url = r?.toString().trim() ?? '';
+      if (url.isEmpty || url == 'null') return;
+      debugPrint('KWIK: jumping to $url');
+      await c.loadUrl(urlRequest: URLRequest(url: WebUri(url)));
+    } catch (e) {
+      debugPrint('KWIK: jump threw $e');
+    }
+  }
+
+  /// Polls the live page for the download form.
   void _startPolling() {
     _poll?.cancel();
     _poll = Timer.periodic(const Duration(milliseconds: 700), (_) => _probe());
@@ -215,22 +247,45 @@ class _KwikWebViewState extends State<_KwikWebView> {
           thirdPartyCookiesEnabled: true,
           // kwik opens the file in a new window on some paths; without this
           // the navigation is silently dropped and nothing is ever resolved.
-          javaScriptCanOpenWindowsAutomatically: true,
+          // Left off deliberately: the redirector uses window-opening to get
+          // around the navigation rules above.
+          javaScriptCanOpenWindowsAutomatically: false,
           supportMultipleWindows: false,
           mediaPlaybackRequiresUserGesture: false,
         ),
         onWebViewCreated: (c) => _c = c,
+        // Adverts open windows to escape the frame restrictions below.
+        onCreateWindow: (c, req) async => false,
         shouldOverrideUrlLoading: (c, action) async {
-          final url = action.request.url?.toString() ?? '';
-          debugPrint('KWIK: nav -> $url');
+          final uri = action.request.url;
+          final url = uri?.toString() ?? '';
+
           if (_media.hasMatch(url)) {
             _finish(_media.firstMatch(url)!.group(0)!, 'navigation');
             return NavigationActionPolicy.CANCEL;
+          }
+
+          // Only the main frame is policed; adverts in sub-frames are
+          // harmless because they cannot move the page.
+          if (action.isForMainFrame) {
+            final host = uri?.host ?? '';
+            if (host.isNotEmpty && !_allowed(host)) {
+              debugPrint('KWIK: blocked $host');
+              return NavigationActionPolicy.CANCEL;
+            }
+            debugPrint('KWIK: nav -> $url');
           }
           return NavigationActionPolicy.ALLOW;
         },
         onLoadStop: (c, url) async {
           debugPrint('KWIK: loaded $url');
+          final host = url?.host.toLowerCase() ?? '';
+          // The redirector's own page: take the kwik link out of it rather
+          // than waiting for scripts that would rather show an advert.
+          if (host.endsWith('pahe.win')) {
+            await _jumpToKwik(c);
+            return;
+          }
           _startPolling();
           await _probe();
         },
