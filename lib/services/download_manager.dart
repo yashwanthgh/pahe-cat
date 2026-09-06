@@ -128,8 +128,11 @@ class DownloadManager extends ChangeNotifier {
   }
 
   /// Cancels every item queued by one action.
+  ///
+  /// An empty id is the group of one-off downloads — episodes queued
+  /// individually rather than as a block — and cancelling that stops all of
+  /// them, which is what the group's own control means.
   void cancelBatch(String batchId) {
-    if (batchId.isEmpty) return;
     for (final item in queue.where((i) => i.batchId == batchId && i.isActive)) {
       cancel(item);
     }

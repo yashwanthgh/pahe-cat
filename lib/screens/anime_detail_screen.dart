@@ -108,6 +108,20 @@ class _DetailParts {
     );
   }
 
+  /// Queues one episode at the current preferences.
+  void downloadOne(Episode e) {
+    final state = episodes;
+    final settings = ref.read(settingsProvider);
+    queueEpisodes(
+      context,
+      anime: anime,
+      episodes: [e],
+      totalEpisodes: state.total > 0 ? state.total : anime.episodes,
+      quality: settings.preferredQuality,
+      audio: settings.prefersDub ? 'DUB' : 'SUB',
+    );
+  }
+
   void openBulkDownload() {
     final state = episodes;
     final visible = state.visibleEpisodes;
@@ -235,6 +249,7 @@ class _NarrowLayout extends ConsumerWidget {
                   isCurrent: episodes.visibleEpisodes[i].number ==
                       parts.progress?.continueEpisode,
                   siblings: episodes.visibleEpisodes,
+                  onDownload: parts.downloadOne,
                 ),
                 childCount: episodes.visibleEpisodes.length,
               ),
@@ -271,21 +286,18 @@ class _WideLayout extends ConsumerWidget {
           children: [
             SizedBox(
               width: _paneWidth,
-              // The panel sits outside the scroll view: while a batch runs it
-              // is the thing being watched, and having to scroll the poster
-              // pane to find it defeated the purpose.
-              child: Column(
-                children: [
-                  Expanded(child: _PosterPane(anime: anime, parts: parts)),
-                  const _DownloadsPanel(),
-                ],
-              ),
+              child: _PosterPane(anime: anime, parts: parts),
             ),
             const VerticalDivider(width: 1, color: PaheColors.border),
             Expanded(
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
+                  // Above the episodes, not below the poster. It is the thing
+                  // being watched while a batch runs, and at the foot of a
+                  // scrolling side pane it was both easy to miss and far from
+                  // the buttons that started it.
+                  const _DownloadsPanel(),
                   Padding(
                     padding: const EdgeInsets.fromLTRB(20, 14, 12, 4),
                     child: parts.episodesHeader(showControls: false),
@@ -762,7 +774,7 @@ class _DownloadsPanelState extends State<_DownloadsPanel> {
     return DecoratedBox(
       decoration: const BoxDecoration(
         color: PaheColors.surface,
-        border: Border(top: BorderSide(color: PaheColors.border)),
+        border: Border(bottom: BorderSide(color: PaheColors.border)),
       ),
       child: Padding(
         padding: const EdgeInsets.fromLTRB(16, 10, 8, 12),
@@ -890,7 +902,11 @@ class _BatchGroup extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final label = items.first.batchLabel;
+    // One-off downloads carry no batch label, but still deserve a group
+    // heading and a cancel of their own.
+    final label = items.first.batchLabel.isNotEmpty
+        ? items.first.batchLabel
+        : 'Single episodes';
     final hidden = items.length - _visibleRows;
 
     return Padding(
@@ -898,8 +914,7 @@ class _BatchGroup extends StatelessWidget {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          if (label.isNotEmpty)
-            Row(
+          Row(
               children: [
                 Expanded(
                   child: Text(
@@ -920,7 +935,7 @@ class _BatchGroup extends StatelessWidget {
                   visualDensity: VisualDensity.compact,
                   padding: EdgeInsets.zero,
                   constraints: const BoxConstraints(),
-                  tooltip: 'Cancel this block',
+                  tooltip: 'Cancel these',
                   onPressed: () => DownloadManager().cancelBatch(batchId),
                 ),
               ],
@@ -1072,6 +1087,7 @@ class _EpisodeGridState extends ConsumerState<_EpisodeGrid> {
                       position: progress[e.number]?.position ?? 0,
                       isCurrent: e.number == resumeAt,
                       siblings: widget.episodes,
+                      onDownload: (ep) => widget.parts.downloadOne(ep),
                     );
                   },
                   childCount: widget.episodes.length,
@@ -1093,6 +1109,41 @@ class _EpisodeGridState extends ConsumerState<_EpisodeGrid> {
   }
 }
 
+/// A tap target inside an episode tile.
+///
+/// Small enough to sit two of them on one line, with its own hit area so
+/// pressing download does not also start playback.
+class _CellAction extends StatelessWidget {
+  final IconData icon;
+  final String tooltip;
+  final Color? color;
+  final double size;
+  final VoidCallback onTap;
+
+  const _CellAction({
+    required this.icon,
+    required this.tooltip,
+    required this.onTap,
+    this.color,
+    this.size = 18,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Tooltip(
+      message: tooltip,
+      child: InkWell(
+        borderRadius: BorderRadius.circular(6),
+        onTap: onTap,
+        child: Padding(
+          padding: const EdgeInsets.all(2),
+          child: Icon(icon, size: size, color: color ?? PaheColors.textMuted),
+        ),
+      ),
+    );
+  }
+}
+
 /// One episode.
 ///
 /// Three states, because "finished", "part-way through" and "not started" are
@@ -1109,6 +1160,7 @@ class _EpisodeCell extends StatelessWidget {
 
   final bool isCurrent;
   final List<Episode> siblings;
+  final ValueChanged<Episode> onDownload;
 
   const _EpisodeCell({
     required this.episode,
@@ -1116,6 +1168,7 @@ class _EpisodeCell extends StatelessWidget {
     required this.position,
     required this.isCurrent,
     required this.siblings,
+    required this.onDownload,
   });
 
   bool get _finished => position >= WatchProgress.completedAt;
@@ -1202,14 +1255,22 @@ class _EpisodeCell extends StatelessWidget {
                     ),
                   ),
                   const Spacer(),
-                  Icon(
-                    isCurrent
+                  // Downloading one episode used to mean long-pressing into
+                  // the picker; it is a button on the tile now.
+                  _CellAction(
+                    icon: Icons.download_rounded,
+                    tooltip: 'Download EP ${episode.number}',
+                    onTap: () => onDownload(episode),
+                  ),
+                  const SizedBox(width: 2),
+                  _CellAction(
+                    icon: isCurrent
                         ? Icons.play_circle_fill_rounded
                         : Icons.play_arrow_rounded,
+                    tooltip: 'Play EP ${episode.number}',
+                    color: isCurrent ? PaheColors.accent : null,
                     size: isCurrent ? 20 : 18,
-                    color: isCurrent
-                        ? PaheColors.accent
-                        : PaheColors.textMuted,
+                    onTap: () => ResumeRoute.push(context, anime, episode.number),
                   ),
                 ],
               ),
@@ -1518,6 +1579,7 @@ class _EpisodeTile extends ConsumerWidget {
 
   /// Passed through so the player can skip to the next episode itself.
   final List<Episode> siblings;
+  final ValueChanged<Episode>? onDownload;
 
   const _EpisodeTile({
     required this.episode,
@@ -1525,6 +1587,7 @@ class _EpisodeTile extends ConsumerWidget {
     required this.position,
     this.isCurrent = false,
     this.siblings = const [],
+    this.onDownload,
   });
 
   bool get _finished => position >= WatchProgress.completedAt;
@@ -1632,20 +1695,31 @@ class _EpisodeTile extends ConsumerWidget {
         // Tap plays at the preferred quality; the picker is still reachable
         // for choosing a different one.
         onTap: () => ResumeRoute.push(context, anime, episode.number),
-        trailing: IconButton(
-          icon: const Icon(Icons.tune_rounded,
-              color: PaheColors.textMuted, size: 20),
-          tooltip: 'Choose quality or audio',
-          onPressed: () => Navigator.push(
-            context,
-            MaterialPageRoute(
-              builder: (_) => EpisodePlayerScreen(
-                anime: anime,
-                episode: episode,
-                siblings: siblings,
+        trailing: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            IconButton(
+              icon: const Icon(Icons.download_rounded,
+                  color: PaheColors.accent, size: 19),
+              tooltip: 'Download EP ${episode.number}',
+              onPressed: () => onDownload?.call(episode),
+            ),
+            IconButton(
+              icon: const Icon(Icons.tune_rounded,
+                  color: PaheColors.textMuted, size: 19),
+              tooltip: 'Choose quality or audio',
+              onPressed: () => Navigator.push(
+                context,
+                MaterialPageRoute(
+                  builder: (_) => EpisodePlayerScreen(
+                    anime: anime,
+                    episode: episode,
+                    siblings: siblings,
+                  ),
+                ),
               ),
             ),
-          ),
+          ],
         ),
       ),
     );
