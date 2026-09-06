@@ -6,6 +6,10 @@ import '../theme.dart';
 
 const _repoUrl = 'https://github.com/yashwanthgh/pahe-cat';
 
+/// Shown in the About row. Must match `version:` in pubspec.yaml and the
+/// released tag, so a user reporting a problem names the build they have.
+const kAppVersion = '0.3.0';
+
 /// Every row here is wired to stored state. This screen was previously a
 /// mock-up — hard-coded values and an empty `onTap` on each row — so none of
 /// it did anything when tapped.
@@ -80,7 +84,7 @@ class SettingsScreen extends ConsumerWidget {
                   const _SettingTile(
                     icon: Icons.info_outline_rounded,
                     title: 'Version',
-                    subtitle: '1.0.0',
+                    subtitle: kAppVersion,
                     onTap: null,
                   ),
                   _SettingTile(
@@ -294,13 +298,15 @@ class _Section extends StatelessWidget {
             ),
           ),
         ),
-        // Material, not a coloured Container: a ListTile paints its
-        // background and ink splashes onto the nearest Material ancestor, so a
-        // plain decorated box around them hides both — which is exactly what
-        // Flutter asserts about here.
+        // Material, not a coloured Container: a ListTile paints its background
+        // and ink splashes onto the nearest Material ancestor, so a plain
+        // decorated box around them hides both.
+        //
+        // The outline goes through `shape` alone. Material asserts that only
+        // one of `shape` and `borderRadius` describes it, and passing both
+        // threw on every build of this screen.
         Material(
           color: PaheColors.card,
-          borderRadius: BorderRadius.circular(16),
           shape: RoundedRectangleBorder(
             borderRadius: BorderRadius.circular(16),
             side: const BorderSide(color: PaheColors.border),

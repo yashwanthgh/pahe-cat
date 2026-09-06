@@ -1,3 +1,5 @@
+import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:pahe_cat/models/anime.dart';
 import 'package:pahe_cat/models/download_item.dart';
@@ -7,6 +9,8 @@ import 'package:pahe_cat/models/watch_progress.dart';
 import 'package:pahe_cat/services/animepahe_api.dart';
 import 'package:pahe_cat/services/download_manager.dart';
 import 'package:pahe_cat/services/providers.dart';
+import 'package:pahe_cat/screens/settings_screen.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 DownloadItem _item({
   String anime = 'Test',
@@ -476,6 +480,34 @@ void main() {
     test('a short last block is not padded out', () {
       final chunks = stateFor(total: 60).downloadChunks;
       expect(chunks.map((c) => c.length), [25, 25, 10]);
+    });
+  });
+
+  // The settings screen shipped with a Material that was given both a `shape`
+  // and a `borderRadius`. Material asserts that only one of them describes its
+  // outline, so the whole tab threw on build — and nothing here ever built it,
+  // which is why that reached a release. Pumping it is the guard.
+  group('settings screen', () {
+    setUp(() => SharedPreferences.setMockInitialValues({}));
+
+    testWidgets('builds without throwing', (tester) async {
+      await tester.pumpWidget(const ProviderScope(
+        child: MaterialApp(home: SettingsScreen()),
+      ));
+      await tester.pump();
+
+      expect(tester.takeException(), isNull);
+      expect(find.text('Settings'), findsOneWidget);
+    });
+
+    testWidgets('shows the version the release is tagged with',
+        (tester) async {
+      await tester.pumpWidget(const ProviderScope(
+        child: MaterialApp(home: SettingsScreen()),
+      ));
+      await tester.pump();
+
+      expect(find.text(kAppVersion), findsOneWidget);
     });
   });
 }

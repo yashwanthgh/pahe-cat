@@ -12,6 +12,10 @@ include: package:flutter_lints/flutter.yaml
 analyzer:
   exclude:
     - build/**
+    # The vendored, patched copy of flutter_inappwebview_macos. It is upstream
+    # code, not ours, and it alone accounts for 229 lint infos — enough to bury
+    # a real problem in our own files.
+    - packages/**
     - android/**
     - ios/**
     - windows/**

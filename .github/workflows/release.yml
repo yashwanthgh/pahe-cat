@@ -8,6 +8,14 @@ on:
 permissions:
   contents: write
 
+# Every asset is named "PaheCat-<tag>-<Platform>.<ext>" so a download is
+# self-describing: which app, which version, which machine it is for. Flutter's
+# own output names (app-arm64-v8a-release.apk, and a bare Release folder) say
+# none of that, and carry no version at all — two releases downloaded in a row
+# would land in the same folder as indistinguishable files.
+env:
+  APP: PaheCat
+
 jobs:
   # ── Gate: fail fast before spending 4 platform builds ────────────────────
   check:
@@ -39,11 +47,23 @@ jobs:
           flutter-version: '3.47.2'
           channel: stable
       - run: flutter pub get
-      - run: flutter build apk --release --split-per-abi
+      # arm64 and arm only. The x86_64 slice that --split-per-abi also emits
+      # runs on emulators alone, so shipping it would add a third APK that no
+      # phone can use and that nobody can tell apart from the real ones.
+      - run: >
+          flutter build apk --release --split-per-abi
+          --target-platform android-arm,android-arm64
+      - name: Name the APKs
+        run: |
+          cd build/app/outputs/flutter-apk
+          mv app-arm64-v8a-release.apk \
+            "$APP-${{ github.ref_name }}-Android-arm64.apk"
+          mv app-armeabi-v7a-release.apk \
+            "$APP-${{ github.ref_name }}-Android-arm32.apk"
       - uses: actions/upload-artifact@v4
         with:
           name: android-apk
-          path: build/app/outputs/flutter-apk/*.apk
+          path: build/app/outputs/flutter-apk/PaheCat-*.apk
 
   # ── macOS ─────────────────────────────────────────────────────────────────
   macos:
@@ -58,20 +78,19 @@ jobs:
           channel: stable
       - run: flutter pub get
       - run: flutter build macos --release
+      # A DMG only. The .zip earlier releases also carried held the same app,
+      # which just meant two macOS files to choose between.
       - name: Package macOS app as a DMG
         run: |
           cd build/macos/Build/Products/Release
           mkdir -p dmg && cp -R "Pahe Cat.app" dmg/
           ln -s /Applications dmg/Applications
           hdiutil create -volname "Pahe Cat" -srcfolder dmg \
-            -ov -format UDZO PaheCat-macOS.dmg
-          zip -r PaheCat-macOS.zip "Pahe Cat.app"
+            -ov -format UDZO "$APP-${{ github.ref_name }}-macOS.dmg"
       - uses: actions/upload-artifact@v4
         with:
           name: macos-app
-          path: |
-            build/macos/Build/Products/Release/PaheCat-macOS.dmg
-            build/macos/Build/Products/Release/PaheCat-macOS.zip
+          path: build/macos/Build/Products/Release/PaheCat-*.dmg
 
   # ── Windows ───────────────────────────────────────────────────────────────
   windows:
@@ -90,40 +109,30 @@ jobs:
         # The whole Release folder, not just the exe: the Flutter engine DLL
         # and the data folder sit beside it and the app will not start without
         # them.
-        run: Compress-Archive -Path build/windows/x64/runner/Release/* -DestinationPath PaheCat-Windows.zip
+        run: >
+          Compress-Archive -Path build/windows/x64/runner/Release/*
+          -DestinationPath "$env:APP-${{ github.ref_name }}-Windows.zip"
         shell: pwsh
       - uses: actions/upload-artifact@v4
         with:
           name: windows-exe
-          path: PaheCat-Windows.zip
+          path: PaheCat-*.zip
 
-  # ── Linux ─────────────────────────────────────────────────────────────────
-  linux:
-    name: Linux Build
-    needs: check
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - run: |
-          sudo apt-get update -y
-          sudo apt-get install -y clang cmake ninja-build pkg-config libgtk-3-dev liblzma-dev
-      - uses: subosito/flutter-action@v2
-        with:
-          flutter-version: '3.47.2'
-          channel: stable
-      - run: flutter pub get
-      - run: flutter build linux --release
-      - name: Tar Linux build
-        run: tar -czf PaheCat-Linux.tar.gz -C build/linux/x64/release/bundle .
-      - uses: actions/upload-artifact@v4
-        with:
-          name: linux-build
-          path: PaheCat-Linux.tar.gz
+  # ── Linux: deliberately not built ─────────────────────────────────────────
+  #
+  # flutter_inappwebview declares android, ios, macos, web and windows — there
+  # is no Linux implementation. Every screen that matters here is a WebView:
+  # the Cloudflare check that runs at startup, the player, the downloader. So a
+  # Linux build compiles and then cannot get past its first screen.
+  #
+  # Earlier releases shipped a Linux tarball anyway. Publishing a file that
+  # cannot work is worse than publishing nothing, so it is gone until the
+  # plugin gains Linux support or the gate stops needing a WebView.
 
   # ── GitHub Release ────────────────────────────────────────────────────────
   release:
     name: Create Release
-    needs: [android, macos, windows, linux]
+    needs: [android, macos, windows]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -137,36 +146,34 @@ jobs:
           body: |
             ## Pahe Cat ${{ github.ref_name }}
 
-            AnimePahe client with watch progress tracking, sub/dub selection, and downloads.
+            AnimePahe client that remembers where you stopped, picks sub/dub
+            and quality once, and downloads episodes.
 
-            ### Downloads
-            | Platform | File |
-            |----------|------|
-            | Android | `PaheCat-arm64-v8a-release.apk` (recommended) |
-            | Android (32-bit) | `PaheCat-armeabi-v7a-release.apk` |
-            | macOS | `PaheCat-macOS.dmg` |
-            | Windows | `PaheCat-Windows.zip` |
-            | Linux | `PaheCat-Linux.tar.gz` |
+            ### Which file do I want?
+
+            | If you are on | Download | Then |
+            |---|---|---|
+            | **Android** phone or tablet | `PaheCat-${{ github.ref_name }}-Android-arm64.apk` | Tap it to install. Allow installing from your browser if asked. |
+            | **Android**, older / 32-bit device | `PaheCat-${{ github.ref_name }}-Android-arm32.apk` | Only if the arm64 one refuses to install. |
+            | **Mac** (Intel or Apple silicon) | `PaheCat-${{ github.ref_name }}-macOS.dmg` | Open it, drag **Pahe Cat** to Applications. First launch: right-click the app then **Open** — it is unsigned. |
+            | **Windows** 10 or 11 | `PaheCat-${{ github.ref_name }}-Windows.zip` | Unzip, run `pahe_cat.exe`. Keep the folder together — the exe needs the DLL and `data/` beside it. |
 
             ### First run
-            **Windows** — unzip and run `pahe_cat.exe`. Keep the whole folder
-            together; the exe needs the engine DLL and `data/` beside it.
+            The app checks the site is reachable. That usually passes on its
+            own in a few seconds. If a checkbox appears, tick it once.
 
-            **macOS** — the app is unsigned, so the first launch needs
-            right-click (or Control-click) then **Open**, rather than a
-            double-click.
+            ### Automatic downloads
+            Working on **macOS**. On **Android** and **Windows** the download
+            button hands the episode to your browser instead — the in-app
+            transfer needs a per-platform native change that is not done yet.
 
-            On first start the app checks the site is reachable. This usually
-            passes on its own in a few seconds. If a checkbox appears, tick it
-            once.
+            No **Linux** build: the WebView this app is built on has no Linux
+            implementation, so it cannot get past its first screen there.
 
             ---
             MIT License · [Source](https://github.com/${{ github.repository }})
-          files: |
-            artifacts/android-apk/*.apk
-            artifacts/macos-app/PaheCat-macOS.dmg
-            artifacts/macos-app/PaheCat-macOS.zip
-            artifacts/windows-exe/PaheCat-Windows.zip
-            artifacts/linux-build/PaheCat-Linux.tar.gz
+          # Globbed, not listed file by file, so the names live in one place
+          # (the build jobs above) and cannot drift out of step with this list.
+          files: artifacts/*/PaheCat-*
           draft: false
           prerelease: false
