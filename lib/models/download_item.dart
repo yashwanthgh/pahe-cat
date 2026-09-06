@@ -12,8 +12,17 @@ class DownloadItem extends ChangeNotifier {
   final String quality;
   final String audio;
 
-  /// The kwik.si page URL. Kept so a retry can re-resolve a link that expired.
+  /// The pahe.win download page URL. Kept so a retry can re-resolve a link
+  /// that expired.
   final String kwikUrl;
+
+  /// Identify the episode on animepahe, so a queued item can look its own
+  /// download link up when it reaches the front of the queue.
+  ///
+  /// Bulk downloads must work this way. Resolving fifty links up front takes
+  /// minutes and most of them have expired by the time their turn comes.
+  final String animeSession;
+  final String episodeSession;
 
   /// The direct file URL. Cleared on retry so it gets resolved again.
   String sourceUrl;
@@ -36,6 +45,8 @@ class DownloadItem extends ChangeNotifier {
     required this.audio,
     required this.sourceUrl,
     this.kwikUrl = '',
+    this.animeSession = '',
+    this.episodeSession = '',
     this.episodeTitle = '',
     this.totalEpisodes = 0,
     this.outputPath = '',
@@ -60,8 +71,11 @@ class DownloadItem extends ChangeNotifier {
   String get displayName =>
       '$animeTitle — EP $episodeNumber ($quality · ${audio.toUpperCase()})';
 
+  /// True when this item still has to find its own link before downloading.
+  bool get needsResolving => sourceUrl.isEmpty && episodeSession.isNotEmpty;
+
   String get progressText {
-    if (_status == DownloadStatus.resolving) return 'Resolving stream…';
+    if (_status == DownloadStatus.resolving) return 'Finding the file…';
     if (_status == DownloadStatus.downloading && _totalBytes > 0) {
       final dl = _downloadedBytes / 1048576;
       final tot = _totalBytes / 1048576;
@@ -87,6 +101,9 @@ class DownloadItem extends ChangeNotifier {
   }
 
   void resetForRetry() {
+    // A link that has expired must be looked up again, so the resolved URL is
+    // discarded whenever it can be recovered from the episode.
+    if (episodeSession.isNotEmpty) sourceUrl = '';
     cancelToken = CancelToken();
     _status = DownloadStatus.queued;
     _progress = 0;
