@@ -171,6 +171,23 @@ class EpisodesNotifier extends StateNotifier<EpisodesState> {
         total: res.total,
         loading: false,
       );
+
+      // Adopt the range this page belongs to, if none was chosen yet.
+      //
+      // hasMore only caps at a range boundary once a range is selected, and
+      // nothing selects one on the first load — so scrolling a long series
+      // walked every page of it and the dropdown had nothing left to do. The
+      // page count is known only after this first response, which is why this
+      // happens here rather than in the constructor.
+      if (state.selected == null) {
+        final ranges = state.ranges;
+        for (final r in ranges) {
+          if (page >= r.firstPage && page <= r.lastPage) {
+            state = state.copyWith(selected: r);
+            break;
+          }
+        }
+      }
     } catch (e) {
       state = state.copyWith(loading: false, error: e.toString());
     }

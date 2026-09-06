@@ -7,6 +7,7 @@ import '../models/episode.dart';
 import '../models/download_item.dart';
 import '../models/watch_progress.dart';
 import '../services/download_manager.dart';
+import '../services/settings.dart';
 import '../services/providers.dart';
 import '../theme.dart';
 import 'episode_player_screen.dart';
@@ -357,6 +358,7 @@ class _PosterPane extends StatelessWidget {
           const SizedBox(height: 10),
           _InfoRow(anime: anime, totalEpisodes: parts.episodes.total),
           parts.continueButton,
+          const _PlaybackPreferences(),
           if (parts.episodes.ranges.isNotEmpty) ...[
             const SizedBox(height: 16),
             const Text(
@@ -377,6 +379,125 @@ class _PosterPane extends StatelessWidget {
           ],
           const _DownloadsPanel(),
         ],
+      ),
+    );
+  }
+}
+
+/// Audio and quality used by a plain tap on an episode.
+///
+/// Sits under the poster so the choice is made once, in view, rather than
+/// answered again on every episode. It writes the same stored preferences the
+/// Settings screen does, so the two cannot disagree.
+class _PlaybackPreferences extends ConsumerWidget {
+  const _PlaybackPreferences();
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final settings = ref.watch(settingsProvider);
+    final notifier = ref.read(settingsProvider.notifier);
+
+    return Padding(
+      padding: const EdgeInsets.only(top: 16),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Text(
+            'PLAY AS',
+            style: TextStyle(
+              color: PaheColors.textMuted,
+              fontSize: 10,
+              fontWeight: FontWeight.w800,
+              letterSpacing: 1,
+            ),
+          ),
+          const SizedBox(height: 6),
+          Row(
+            children: [
+              _PrefChip(
+                label: 'SUB',
+                active: !settings.prefersDub,
+                tint: PaheColors.info,
+                onTap: () => notifier.setAudio('jpn'),
+              ),
+              const SizedBox(width: 6),
+              _PrefChip(
+                label: 'DUB',
+                active: settings.prefersDub,
+                tint: PaheColors.accent2,
+                onTap: () => notifier.setAudio('eng'),
+              ),
+            ],
+          ),
+          const SizedBox(height: 6),
+          Row(
+            children: [
+              for (final q in AppSettings.qualities) ...[
+                _PrefChip(
+                  label: q,
+                  active: settings.preferredQuality == q,
+                  tint: PaheColors.accent,
+                  onTap: () => notifier.setQuality(q),
+                ),
+                if (q != AppSettings.qualities.last) const SizedBox(width: 6),
+              ],
+            ],
+          ),
+          const SizedBox(height: 6),
+          const Text(
+            'Used when you tap an episode. Long-press one to pick something '
+            'else just for it.',
+            style: TextStyle(
+                color: PaheColors.textMuted, fontSize: 10, height: 1.35),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _PrefChip extends StatelessWidget {
+  final String label;
+  final bool active;
+  final Color tint;
+  final VoidCallback onTap;
+
+  const _PrefChip({
+    required this.label,
+    required this.active,
+    required this.tint,
+    required this.onTap,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Expanded(
+      child: Material(
+        color: active ? tint.withValues(alpha: 0.18) : PaheColors.card,
+        borderRadius: BorderRadius.circular(10),
+        child: InkWell(
+          borderRadius: BorderRadius.circular(10),
+          onTap: onTap,
+          child: Container(
+            decoration: BoxDecoration(
+              borderRadius: BorderRadius.circular(10),
+              border: Border.all(
+                color: active ? tint : PaheColors.border,
+                width: active ? 1.5 : 1,
+              ),
+            ),
+            padding: const EdgeInsets.symmetric(vertical: 7),
+            alignment: Alignment.center,
+            child: Text(
+              label,
+              style: TextStyle(
+                color: active ? PaheColors.textPrimary : PaheColors.textMuted,
+                fontSize: 11,
+                fontWeight: FontWeight.w800,
+              ),
+            ),
+          ),
+        ),
       ),
     );
   }
