@@ -9,6 +9,7 @@ import '../services/animepahe_api.dart';
 import '../theme.dart';
 import '../widgets/anime_card.dart';
 import 'anime_detail_screen.dart';
+import 'resume_flow.dart';
 
 /// Sizes tiles from the real column width rather than a fixed aspect ratio.
 ///
@@ -250,19 +251,17 @@ class _ContinueCard extends StatelessWidget {
         borderRadius: BorderRadius.circular(14),
         child: InkWell(
           borderRadius: BorderRadius.circular(14),
-          // Opens the series page, where the episode list and the resume point
-          // both live.
-          onTap: () => Navigator.push(
+          // Straight into the video. Everything needed is already known —
+          // which episode, and which quality and audio — so routing through
+          // the series page and the source picker only added taps.
+          onTap: () => ResumeRoute.push(
             context,
-            MaterialPageRoute(
-              builder: (_) => AnimeDetailScreen(
-                anime: Anime.fromHistory(
-                  session: progress.animeSession,
-                  title: progress.animeTitle,
-                  poster: progress.animePoster,
-                ),
-              ),
+            Anime.fromHistory(
+              session: progress.animeSession,
+              title: progress.animeTitle,
+              poster: progress.animePoster,
             ),
+            progress.continueEpisode,
           ),
           child: Padding(
             padding: const EdgeInsets.all(12),

@@ -33,6 +33,12 @@ class WebPlayerScreen extends StatefulWidget {
   /// resuming — without seeking to it the player always began at zero.
   final double startAt;
 
+  /// Move to the adjacent episode from inside the player. Null when there is
+  /// none. Having to leave the video, go back to the list and pick the next
+  /// episode by hand is the thing these avoid.
+  final VoidCallback? onNext;
+  final VoidCallback? onPrevious;
+
   const WebPlayerScreen({
     super.key,
     required this.kwikUrl,
@@ -40,6 +46,8 @@ class WebPlayerScreen extends StatefulWidget {
     this.subtitle = '',
     this.onProgress,
     this.startAt = 0,
+    this.onNext,
+    this.onPrevious,
   });
 
   @override
@@ -185,7 +193,12 @@ class _WebPlayerScreenState extends State<WebPlayerScreen> {
       body: SafeArea(
         child: Column(
           children: [
-            _PlayerBar(title: widget.title, subtitle: widget.subtitle),
+            _PlayerBar(
+              title: widget.title,
+              subtitle: widget.subtitle,
+              onNext: widget.onNext,
+              onPrevious: widget.onPrevious,
+            ),
             Expanded(
               child: Stack(
                 children: [
@@ -255,7 +268,15 @@ class _WebPlayerScreenState extends State<WebPlayerScreen> {
 class _PlayerBar extends StatelessWidget {
   final String title;
   final String subtitle;
-  const _PlayerBar({required this.title, required this.subtitle});
+  final VoidCallback? onNext;
+  final VoidCallback? onPrevious;
+
+  const _PlayerBar({
+    required this.title,
+    required this.subtitle,
+    this.onNext,
+    this.onPrevious,
+  });
 
   @override
   Widget build(BuildContext context) {
@@ -292,6 +313,20 @@ class _PlayerBar extends StatelessWidget {
                   ),
               ],
             ),
+          ),
+          IconButton(
+            icon: const Icon(Icons.skip_previous_rounded),
+            color: Colors.white,
+            disabledColor: Colors.white24,
+            tooltip: 'Previous episode',
+            onPressed: onPrevious,
+          ),
+          IconButton(
+            icon: const Icon(Icons.skip_next_rounded),
+            color: Colors.white,
+            disabledColor: Colors.white24,
+            tooltip: 'Next episode',
+            onPressed: onNext,
           ),
         ],
       ),

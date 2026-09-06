@@ -8,6 +8,7 @@ import '../models/watch_progress.dart';
 import '../services/providers.dart';
 import '../theme.dart';
 import 'episode_player_screen.dart';
+import 'resume_flow.dart';
 
 class AnimeDetailScreen extends ConsumerWidget {
   final Anime anime;
@@ -319,16 +320,9 @@ class _ContinueButton extends StatelessWidget {
           : (_lastWatched > 0
               ? '$_lastWatched watched'
               : (state.total > 0 ? '${state.total} eps' : null)),
-      onTap: () => Navigator.push(
-        context,
-        MaterialPageRoute(
-          builder: (_) => EpisodePlayerScreen(
-            anime: anime,
-            episode: target,
-            siblings: state.episodes,
-          ),
-        ),
-      ),
+      // Straight into the video: the episode and the preferred quality are
+      // both already known, so a source picker in between is just another tap.
+      onTap: () => ResumeRoute.push(context, anime, target.number),
     );
   }
 }
@@ -452,9 +446,13 @@ class _EpisodeTile extends ConsumerWidget {
             fontWeight: FontWeight.w700,
           ),
         ),
+        // Tap plays at the preferred quality; the picker is still reachable
+        // for choosing a different one.
+        onTap: () => ResumeRoute.push(context, anime, episode.number),
         trailing: IconButton(
-          icon: const Icon(Icons.play_circle_outline_rounded,
-              color: PaheColors.accent, size: 28),
+          icon: const Icon(Icons.tune_rounded,
+              color: PaheColors.textMuted, size: 20),
+          tooltip: 'Choose quality or audio',
           onPressed: () => Navigator.push(
             context,
             MaterialPageRoute(
