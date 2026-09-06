@@ -111,7 +111,7 @@ jobs:
         # them.
         run: >
           Compress-Archive -Path build/windows/x64/runner/Release/*
-          -DestinationPath "$env:APP-${{ github.ref_name }}-Windows.zip"
+          -DestinationPath "${env:APP}-${{ github.ref_name }}-Windows.zip"
         shell: pwsh
       - uses: actions/upload-artifact@v4
         with:
