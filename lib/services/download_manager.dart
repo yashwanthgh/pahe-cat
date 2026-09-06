@@ -242,6 +242,74 @@ class DownloadManager extends ChangeNotifier {
     item.refererUrl = resolved.referer;
   }
 
+  /// Opens the file stream, trying progressively plainer headers.
+  ///
+  /// A 403 from the media host does not say which header offended it, and
+  /// guessing cost several rounds. Each variant is tried in turn and the one
+  /// that worked is logged, so the answer comes from the server rather than
+  /// from speculation:
+  ///
+  ///  * everything — the file host's own cookies, referer and User-Agent
+  ///  * no cookies — some CDNs refuse a request carrying unexpected ones
+  ///  * referer and User-Agent only, as a plain browser would send
+  ///  * nothing but a User-Agent
+  Future<Response<ResponseBody>> _openStream(
+      DownloadItem item, int startByte) async {
+    final full = await CfSession()
+        .fileHeaders(item.sourceUrl, referer: item.refererUrl);
+    final noCookies = {...full}..remove('Cookie');
+    final minimal = {
+      'User-Agent': full['User-Agent'] ?? '',
+      if (item.refererUrl.isNotEmpty) 'Referer': item.refererUrl,
+    };
+    final bare = {'User-Agent': full['User-Agent'] ?? ''};
+
+    final variants = <String, Map<String, String>>{
+      'full': full,
+      'no-cookies': noCookies,
+      'referer-only': minimal,
+      'ua-only': bare,
+    };
+
+    Object? last;
+    for (final entry in variants.entries) {
+      try {
+        final r = await _dio.get<ResponseBody>(
+          item.sourceUrl,
+          cancelToken: item.cancelToken,
+          options: Options(
+            responseType: ResponseType.stream,
+            followRedirects: true,
+            headers: {
+              ...entry.value,
+              if (startByte > 0) 'Range': 'bytes=$startByte-',
+            },
+            // Handled here rather than thrown, so the next variant gets a go.
+            validateStatus: (_) => true,
+          ),
+        );
+        final code = r.statusCode ?? 0;
+        if (code >= 200 && code < 300) {
+          debugPrint('DOWNLOAD: ${entry.key} headers accepted ($code)');
+          return r;
+        }
+        debugPrint('DOWNLOAD: ${entry.key} refused with $code'
+            ' (server: ${r.headers.value('server')},'
+            ' cf-ray: ${r.headers.value('cf-ray')})');
+        last = DioException(
+          requestOptions: r.requestOptions,
+          response: r,
+          type: DioExceptionType.badResponse,
+        );
+      } on DioException catch (e) {
+        if (CancelToken.isCancel(e)) rethrow;
+        debugPrint('DOWNLOAD: ${entry.key} threw ${e.type}');
+        last = e;
+      }
+    }
+    throw last ?? Exception('Could not open ${item.sourceUrl}');
+  }
+
   /// Creates the series folder, falling back if the chosen root is refused.
   ///
   /// A sandboxed macOS build cannot create a folder in the user's Downloads
@@ -304,20 +372,7 @@ class DownloadManager extends ChangeNotifier {
       final partial = File(tempPath);
       final startByte = await partial.exists() ? await partial.length() : 0;
 
-      final response = await _dio.get<ResponseBody>(
-        item.sourceUrl,
-        cancelToken: item.cancelToken,
-        options: Options(
-          responseType: ResponseType.stream,
-          followRedirects: true,
-          headers: {
-            // Built for the file's own host, not animepahe's: see fileHeaders.
-            ...await CfSession()
-                .fileHeaders(item.sourceUrl, referer: item.refererUrl),
-            if (startByte > 0) 'Range': 'bytes=$startByte-',
-          },
-        ),
-      );
+      final response = await _openStream(item, startByte);
 
       final contentLength =
           int.tryParse(response.headers.value('content-length') ?? '') ?? 0;
