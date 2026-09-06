@@ -294,11 +294,16 @@ class _Section extends StatelessWidget {
             ),
           ),
         ),
-        Container(
-          decoration: BoxDecoration(
-            color: PaheColors.card,
+        // Material, not a coloured Container: a ListTile paints its
+        // background and ink splashes onto the nearest Material ancestor, so a
+        // plain decorated box around them hides both — which is exactly what
+        // Flutter asserts about here.
+        Material(
+          color: PaheColors.card,
+          borderRadius: BorderRadius.circular(16),
+          shape: RoundedRectangleBorder(
             borderRadius: BorderRadius.circular(16),
-            border: Border.all(color: PaheColors.border),
+            side: const BorderSide(color: PaheColors.border),
           ),
           child: Column(
             children: List.generate(children.length * 2 - 1, (i) {
