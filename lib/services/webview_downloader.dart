@@ -227,7 +227,11 @@ class _DownloaderViewState extends State<_DownloaderView> {
         final status = (map['status'] as num?)?.toInt() ?? 0;
         final total = (map['total'] as num?)?.toInt() ?? 0;
         final type = (map['type'] ?? '').toString();
-        debugPrint('WVDL: status=$status total=$total type=$type');
+        debugPrint('WVDL: status=$status total=$total type=$type '
+            'server=${map['server']} ray=${map['ray']} '
+            'mitigated=${map['mitigated']}');
+        final why = (map['why'] ?? '').toString();
+        if (why.isNotEmpty) debugPrint('WVDL BODY: $why');
 
         if (status < 200 || status >= 300) {
           _lastFailure = DownloadRefused(status);
@@ -343,10 +347,26 @@ class _DownloaderViewState extends State<_DownloaderView> {
             return 'fetch-failed';
           }
 
+          // A refusal's own words. Guessing at why the CDN says no has cost
+          // several rounds; its error page states the reason.
+          let why = '';
+          if (!res.ok || (res.headers.get('content-type') || '')
+                           .indexOf('text/html') === 0) {
+            try {
+              why = (await res.text()).replace(/\s+/g, ' ').slice(0, 400);
+            } catch (e) {
+              why = 'unreadable: ' + e;
+            }
+          }
+
           const go = await call('pcStart', {
             status: res.status,
             total: Number(res.headers.get('content-length') || 0),
             type: res.headers.get('content-type') || '',
+            server: res.headers.get('server') || '',
+            ray: res.headers.get('cf-ray') || '',
+            mitigated: res.headers.get('cf-mitigated') || '',
+            why: why,
           });
           if (go !== 'go') {
             await call('pcEnd', 'refused');

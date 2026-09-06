@@ -1,7 +1,22 @@
 import 'package:dio/dio.dart';
 import 'package:flutter/foundation.dart';
 
-enum DownloadStatus { queued, resolving, downloading, completed, failed, cancelled }
+enum DownloadStatus {
+  queued,
+  resolving,
+  downloading,
+  completed,
+  failed,
+  cancelled,
+
+  /// Handed to the system browser to finish.
+  ///
+  /// The media CDN's firewall refuses anything that is not a page navigation —
+  /// a fetch always carries Sec-Fetch-Mode: cors, and those headers are set by
+  /// the browser and cannot be changed — so the file cannot be transferred by
+  /// the app. The browser can, and does.
+  openedExternally,
+}
 
 class DownloadItem extends ChangeNotifier {
   final String id;
@@ -83,7 +98,9 @@ class DownloadItem extends ChangeNotifier {
   bool get canRetry =>
       _status == DownloadStatus.failed || _status == DownloadStatus.cancelled;
 
-  bool get isCompleted => _status == DownloadStatus.completed;
+  bool get isCompleted =>
+      _status == DownloadStatus.completed ||
+      _status == DownloadStatus.openedExternally;
 
   String get displayName =>
       '$animeTitle — EP $episodeNumber ($quality · ${audio.toUpperCase()})';

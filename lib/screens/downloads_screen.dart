@@ -204,6 +204,7 @@ class _DownloadTile extends StatelessWidget {
   Color get _statusColor {
     return switch (item.status) {
       DownloadStatus.completed => PaheColors.green,
+      DownloadStatus.openedExternally => PaheColors.blue,
       DownloadStatus.failed => PaheColors.red,
       DownloadStatus.cancelled => PaheColors.textMuted,
       DownloadStatus.resolving => PaheColors.amber,
@@ -215,6 +216,7 @@ class _DownloadTile extends StatelessWidget {
   IconData get _statusIcon {
     return switch (item.status) {
       DownloadStatus.completed => Icons.check_circle_rounded,
+      DownloadStatus.openedExternally => Icons.open_in_browser_rounded,
       DownloadStatus.failed => Icons.error_outline_rounded,
       DownloadStatus.cancelled => Icons.cancel_outlined,
       DownloadStatus.resolving => Icons.hourglass_top_rounded,

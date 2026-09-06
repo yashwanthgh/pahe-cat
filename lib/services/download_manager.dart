@@ -5,6 +5,7 @@ import 'package:flutter/material.dart' show OverlayState;
 import 'package:flutter/foundation.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:url_launcher/url_launcher.dart';
 import '../models/download_item.dart';
 import '../models/stream_source.dart';
 import 'animepahe_api.dart';
@@ -245,6 +246,42 @@ class DownloadManager extends ChangeNotifier {
   }
 
 
+  /// Finishes the download in the system browser.
+  ///
+  /// Not a workaround so much as the only route the media host allows. Its
+  /// Cloudflare firewall answers 403 with "Attention Required!" to every
+  /// request that is not a page navigation, and Sec-Fetch-Mode — the header
+  /// that distinguishes one — is set by the browser and cannot be forged. A
+  /// real browser navigation is accepted, so the resolved link is handed over
+  /// and the file lands in the system's own downloads folder.
+  Future<void> _handToBrowser(DownloadItem item, Object reason) async {
+    debugPrint('DOWNLOAD: handing ${item.episodeNumber} to the browser'
+        ' ($reason)');
+    final uri = Uri.tryParse(item.sourceUrl);
+    if (uri == null) {
+      item.update(
+        status: DownloadStatus.failed,
+        statusMessage: 'Could not open the link',
+      );
+      return;
+    }
+    try {
+      final ok = await launchUrl(uri, mode: LaunchMode.externalApplication);
+      item.update(
+        status: ok ? DownloadStatus.openedExternally : DownloadStatus.failed,
+        progress: ok ? 1.0 : 0.0,
+        statusMessage: ok
+            ? 'Downloading in your browser'
+            : 'No browser available to open this',
+      );
+    } catch (e) {
+      item.update(
+        status: DownloadStatus.failed,
+        statusMessage: 'Could not open your browser: $e',
+      );
+    }
+  }
+
   /// Creates the series folder, falling back if the chosen root is refused.
   ///
   /// A sandboxed macOS build cannot create a folder in the user's Downloads
@@ -348,6 +385,14 @@ class DownloadManager extends ChangeNotifier {
 
       try {
         await transfer();
+      } on DownloadRefused catch (e) {
+        // The CDN's firewall refuses anything that is not a page navigation.
+        // The browser can make one; this app cannot.
+        await sink?.close();
+        sink = null;
+        if (await partial.exists()) await partial.delete();
+        await _handToBrowser(item, e);
+        return;
       } on DownloadNeedsRestart {
         // The host ignored the Range request, so the partial file is useless.
         debugPrint('DOWNLOAD: resume refused, starting over');
