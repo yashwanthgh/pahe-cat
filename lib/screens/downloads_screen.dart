@@ -94,12 +94,45 @@ class DownloadsScreen extends StatelessWidget {
                       fontWeight: FontWeight.w900,
                     ),
                   ),
-                  TextButton.icon(
-                    onPressed: () => DownloadManager().clearDone(),
-                    icon: const Icon(Icons.clear_all_rounded,
-                        size: 16, color: PaheColors.textMuted),
-                    label: const Text('Clear done',
-                        style: TextStyle(color: PaheColors.textMuted, fontSize: 12)),
+                  ListenableBuilder(
+                    listenable: DownloadManager(),
+                    builder: (ctx, _) {
+                      final m = DownloadManager();
+                      final failed = m.queue.where((i) => i.canRetry).length;
+                      final active = m.queue.where((i) => i.isActive).length;
+                      return Row(
+                        children: [
+                          // A batch fails as a batch, so retrying twenty-five
+                          // items one at a time is not reasonable.
+                          if (failed > 0)
+                            TextButton.icon(
+                              onPressed: m.retryFailed,
+                              icon: const Icon(Icons.refresh_rounded,
+                                  size: 16, color: PaheColors.accent),
+                              label: Text('Retry $failed',
+                                  style: const TextStyle(
+                                      color: PaheColors.accent, fontSize: 12)),
+                            ),
+                          if (active > 0)
+                            TextButton.icon(
+                              onPressed: m.cancelAll,
+                              icon: const Icon(Icons.stop_circle_outlined,
+                                  size: 16, color: PaheColors.red),
+                              label: Text('Cancel $active',
+                                  style: const TextStyle(
+                                      color: PaheColors.red, fontSize: 12)),
+                            ),
+                          TextButton.icon(
+                            onPressed: m.clearDone,
+                            icon: const Icon(Icons.clear_all_rounded,
+                                size: 16, color: PaheColors.textMuted),
+                            label: const Text('Clear done',
+                                style: TextStyle(
+                                    color: PaheColors.textMuted, fontSize: 12)),
+                          ),
+                        ],
+                      );
+                    },
                   ),
                 ],
               ),

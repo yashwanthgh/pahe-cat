@@ -32,11 +32,17 @@ import 'domain_resolver.dart';
 /// [kPageShadeScript], so there is nothing to show.
 class KwikResolver {
   /// Resolves [kwikUrl] to a media URL, or throws.
-  static Future<String> resolve(BuildContext context, String kwikUrl) async {
+  ///
+  /// Takes an [OverlayState] rather than a BuildContext. `Overlay.of` searches
+  /// a context's *ancestors*, and a Navigator builds its overlay as a
+  /// descendant — so resolving from a navigator's own context found no overlay
+  /// and every download failed with "No Overlay widget found". A NavigatorState
+  /// hands out the right one directly through `.overlay`.
+  static Future<String> resolve(OverlayState overlay, String kwikUrl) async {
     final completer = Completer<String>();
-    late OverlayEntry overlay;
+    late OverlayEntry entry;
 
-    overlay = OverlayEntry(
+    entry = OverlayEntry(
       builder: (_) => _KwikWebView(
         kwikUrl: kwikUrl,
         onResolved: (url) {
@@ -48,7 +54,7 @@ class KwikResolver {
       ),
     );
 
-    Overlay.of(context).insert(overlay);
+    overlay.insert(entry);
     try {
       return await completer.future.timeout(
         const Duration(seconds: 45),
@@ -56,7 +62,7 @@ class KwikResolver {
             'kwik did not hand over a media URL for $kwikUrl'),
       );
     } finally {
-      overlay.remove();
+      entry.remove();
     }
   }
 }

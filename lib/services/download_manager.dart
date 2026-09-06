@@ -136,6 +136,17 @@ class DownloadManager extends ChangeNotifier {
     notifyListeners();
   }
 
+  /// Retries every failed item.
+  ///
+  /// A batch fails as a batch — one broken assumption takes all twenty-five
+  /// with it — so clearing them one at a time is not reasonable.
+  void retryFailed() {
+    for (final item in queue.where((i) => i.canRetry).toList()) {
+      retry(item);
+    }
+    notifyListeners();
+  }
+
   /// Cancels everything still in flight.
   void cancelAll() {
     for (final item in queue.where((i) => i.isActive)) {

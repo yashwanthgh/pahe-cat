@@ -44,9 +44,13 @@ class _PaheCatAppState extends State<PaheCatApp> {
   void initState() {
     super.initState();
     DownloadManager().resolver = (url) {
-      final ctx = _navigatorKey.currentContext;
-      if (ctx == null) throw StateError('App is not ready to resolve links');
-      return KwikResolver.resolve(ctx, url);
+      // The navigator's own overlay, not Overlay.of(its context): that
+      // searches ancestors, and the overlay is a descendant of the navigator.
+      final overlay = _navigatorKey.currentState?.overlay;
+      if (overlay == null) {
+        throw StateError('App is not ready to resolve links yet');
+      }
+      return KwikResolver.resolve(overlay, url);
     };
   }
 

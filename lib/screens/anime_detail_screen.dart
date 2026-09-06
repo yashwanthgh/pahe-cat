@@ -79,7 +79,11 @@ class _DetailParts {
         if (state.total > 0) ...[
           const SizedBox(width: 8),
           Text(
-            '${state.episodes.length} of ${state.total}',
+            // Counts what is on screen, not everything fetched. An API page
+            // can straddle a page boundary — episodes 31-60 arrive together
+            // for a page ending at 50 — so the raw loaded count read 60 under
+            // a heading of "EP 1-50".
+            '${state.visibleEpisodes.length} of ${state.total}',
             style: const TextStyle(color: PaheColors.textMuted, fontSize: 11),
           ),
         ],
@@ -1529,28 +1533,29 @@ class _EpisodeTile extends ConsumerWidget {
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
-    return Container(
-      margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 3),
-      decoration: BoxDecoration(
-        // Same three states as the grid: finished, part-watched, untouched.
-        color: _finished
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 3),
+      child: ListTile(
+        // Set on the tile rather than a wrapper: ListTile paints its own
+        // background over an ancestor's, which Flutter asserts about.
+        tileColor: _finished
             ? PaheColors.watchedTint
             : _started
                 ? PaheColors.watchingTint
                 : PaheColors.card,
-        borderRadius: BorderRadius.circular(12),
-        border: Border.all(
-          color: isCurrent
-              ? PaheColors.accent
-              : _finished
-                  ? PaheColors.watchedEdge
-                  : _started
-                      ? PaheColors.watchingEdge
-                      : PaheColors.border,
-          width: isCurrent ? 2 : 1,
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(12),
+          side: BorderSide(
+            color: isCurrent
+                ? PaheColors.accent
+                : _finished
+                    ? PaheColors.watchedEdge
+                    : _started
+                        ? PaheColors.watchingEdge
+                        : PaheColors.border,
+            width: isCurrent ? 2 : 1,
+          ),
         ),
-      ),
-      child: ListTile(
         contentPadding: const EdgeInsets.symmetric(horizontal: 14, vertical: 4),
         leading: Container(
           width: 40,

@@ -187,7 +187,7 @@ class _EpisodePlayerScreenState extends ConsumerState<EpisodePlayerScreen> {
       }
       // The download menu's link, never the embed: only this route ends at a
       // real file.
-      final url = await KwikResolver.resolve(ctx, src.downloadUrl);
+      final url = await KwikResolver.resolve(Overlay.of(ctx), src.downloadUrl);
       DownloadManager().enqueue(
         animeTitle: widget.anime.title,
         episodeNumber: widget.episode.number,
