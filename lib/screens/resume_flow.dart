@@ -32,9 +32,14 @@ class ResumeRoute extends ConsumerStatefulWidget {
 
   /// Replaces the current route, so skipping between episodes does not build
   /// up a back stack of every one visited.
-  static Future<void> replace(
-      BuildContext context, Anime anime, int episodeNumber) {
-    return Navigator.of(context).pushReplacement(MaterialPageRoute(
+  ///
+  /// Takes a [NavigatorState] rather than a BuildContext on purpose. The
+  /// caller is the player, which this route has already been replaced by, so
+  /// the context that started the flow is no longer mounted and
+  /// `Navigator.of` on it throws. A NavigatorState stays valid.
+  static Future<void> replaceWith(
+      NavigatorState nav, Anime anime, int episodeNumber) {
+    return nav.pushReplacement(MaterialPageRoute(
       builder: (_) => ResumeRoute(anime: anime, episodeNumber: episodeNumber),
     ));
   }
@@ -82,7 +87,11 @@ class _ResumeRouteState extends ConsumerState<ResumeRoute> {
           ? widget.anime.episodes
           : found.total;
 
-      await Navigator.of(context).pushReplacement(MaterialPageRoute(
+      // Captured before this route goes away, so the skip buttons still have
+      // a live navigator to work with.
+      final nav = Navigator.of(context);
+
+      await nav.pushReplacement(MaterialPageRoute(
         builder: (_) => WebPlayerScreen(
           kwikUrl: source.kwikUrl,
           title: widget.anime.title,
@@ -100,10 +109,11 @@ class _ResumeRouteState extends ConsumerState<ResumeRoute> {
           // honouring the saved quality and resume position.
           onNext: found.next == null
               ? null
-              : () => ResumeRoute.replace(context, widget.anime, found.next!),
+              : () => ResumeRoute.replaceWith(nav, widget.anime, found.next!),
           onPrevious: found.previous == null
               ? null
-              : () => ResumeRoute.replace(context, widget.anime, found.previous!),
+              : () =>
+                  ResumeRoute.replaceWith(nav, widget.anime, found.previous!),
         ),
       ));
 
