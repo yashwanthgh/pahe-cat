@@ -36,5 +36,20 @@ class Anime {
         slug: j['slug'] ?? '',
       );
 
-  String get pageUrl => 'https://animepahe.ru/anime/$slug';
+  /// The `m=airing` feed returns episode releases rather than anime records,
+  /// so the anime lives under anime_* keys and the only image is the episode
+  /// snapshot. Mapping it with [Anime.fromJson] yields blank cards.
+  factory Anime.fromAiring(Map<String, dynamic> j) => Anime(
+        session: j['anime_session'] ?? '',
+        title: j['anime_title'] ?? '',
+        poster: j['poster'] ?? j['snapshot'] ?? '',
+        type: j['type'] ?? 'TV',
+        // The feed carries the latest episode number, not a series total.
+        episodes: 0,
+        status: 'Ongoing',
+        season: '',
+        year: 0,
+        score: 0,
+        slug: j['anime_slug'] ?? '',
+      );
 }

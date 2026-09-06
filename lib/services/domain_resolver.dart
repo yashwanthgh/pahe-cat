@@ -10,13 +10,15 @@ import 'package:shared_preferences/shared_preferences.dart';
 /// Cloudflare answers non-browser requests with 403/503. That means "alive
 /// behind CF", NOT "dead" — a naive 200-only check rejects every domain.
 class DomainResolver {
+  // .pw is canonical as of 2026-09; .com/.org redirect to it. Verified live
+  // hosts sit behind Cloudflare. .ru and .su are squatted, .net is parked —
+  // kept out of the list, and _isParked() rejects them if they ever appear as
+  // a redirect target.
   static const _candidates = [
-    'animepahe.ru',
+    'animepahe.pw',
     'animepahe.com',
     'animepahe.org',
-    'animepahe.pw',
-    'animepahe.moe',
-    'animepahe.net',
+    'animepahe.ru',
   ];
 
   static const _prefsKey = 'resolved_domain';
@@ -91,11 +93,17 @@ class DomainResolver {
 
   static Future<_Probe?> _probeOne(String candidate) async {
     try {
-      final r = await _probe.get('https://$candidate/');
+      final r = await _probe.get<String>('https://$candidate/');
       final finalHost = r.realUri.host;
+      // A matching hostname proves nothing — expired animepahe domains get
+      // resold and serve parking pages under the same name.
       if (!_looksLikeAnimePahe(finalHost)) return null;
-      // 200 = through; 403/503 = alive behind Cloudflare.
       if (![200, 403, 503].contains(r.statusCode)) return null;
+
+      final body = (r.data ?? '').toLowerCase();
+      if (_isParked(body)) return null;
+      if (!_isCloudflare(body) && !_isRealSite(body)) return null;
+
       return _Probe(candidate, finalHost);
     } catch (_) {
       return null; // DNS failure, refused, timeout → dead
@@ -103,7 +111,31 @@ class DomainResolver {
   }
 
   static bool _looksLikeAnimePahe(String h) =>
-      h.startsWith('animepahe.') || h.startsWith('www.animepahe.');
+      h == 'animepahe.su' // known squatter, never adopt
+          ? false
+          : h.startsWith('animepahe.') || h.startsWith('www.animepahe.');
+
+  static bool _isParked(String body) => const [
+        'domain is for sale',
+        'this domain is for sale',
+        'buy this domain',
+        'related searches',
+        'domain parking',
+        'contact the owner',
+      ].any(body.contains);
+
+  /// The real host answers non-browser clients with a Cloudflare interstitial,
+  /// so a challenge page is positive evidence the domain is live.
+  static bool _isCloudflare(String body) =>
+      body.contains('just a moment') ||
+      body.contains('challenge-platform') ||
+      body.contains('cf-browser-verification') ||
+      (body.contains('cloudflare') && body.contains('enable javascript'));
+
+  static bool _isRealSite(String body) =>
+      body.contains('latest release') ||
+      body.contains('/anime/') ||
+      body.contains('class="episode');
 }
 
 class _Probe {

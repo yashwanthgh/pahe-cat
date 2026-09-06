@@ -12,21 +12,22 @@ class DownloadManager extends ChangeNotifier {
   factory DownloadManager() => _i;
 
   final List<DownloadItem> queue = [];
-  final _semaphore = _Semaphore(2); // 2 concurrent downloads
+  final _semaphore = _Semaphore(2);
 
   late final Dio _dio = Dio(BaseOptions(
     connectTimeout: const Duration(seconds: 20),
-    receiveTimeout: const Duration(seconds: 0), // streaming
+    receiveTimeout: Duration.zero, // streaming — no idle cap
   ));
 
-  Future<String> get _saveRoot async {
+  Future<String> get saveRoot async {
     if (Platform.isAndroid) {
-      final dir = await getExternalStorageDirectory();
-      return '${dir?.path ?? (await getApplicationDocumentsDirectory()).path}/Pahe Boy';
+      final dir = await getExternalStorageDirectory() ??
+          await getApplicationDocumentsDirectory();
+      return '${dir.path}/Pahe Boy';
     }
-    final home = Platform.isMacOS || Platform.isLinux
-        ? Platform.environment['HOME']!
-        : Platform.environment['USERPROFILE']!;
+    final home = Platform.environment['HOME'] ??
+        Platform.environment['USERPROFILE'] ??
+        (await getApplicationDocumentsDirectory()).path;
     return '$home/Desktop/Pahe Boy';
   }
 
@@ -37,17 +38,22 @@ class DownloadManager extends ChangeNotifier {
     required String audio,
     required String kwikUrl,
     required String resolvedUrl,
+    String episodeTitle = '',
+    int totalEpisodes = 0,
   }) {
-    final id = '${animeTitle}_${episodeNumber}_$quality';
+    final id = '${animeTitle}_${episodeNumber}_${quality}_$audio';
     if (queue.any((i) => i.id == id && i.isActive)) return;
 
     final item = DownloadItem(
       id: id,
       animeTitle: animeTitle,
       episodeNumber: episodeNumber,
+      episodeTitle: episodeTitle,
+      totalEpisodes: totalEpisodes,
       quality: quality,
       audio: audio,
       sourceUrl: resolvedUrl,
+      kwikUrl: kwikUrl,
     );
     queue.add(item);
     notifyListeners();
@@ -56,29 +62,40 @@ class DownloadManager extends ChangeNotifier {
 
   Future<void> _process(DownloadItem item) async {
     await _semaphore.acquire();
+    IOSink? sink;
     try {
+      if (item.cancelToken.isCancelled) return;
       item.update(
         status: DownloadStatus.downloading,
-        statusMessage: 'Starting download…',
+        statusMessage: 'Starting…',
       );
 
-      final root = await _saveRoot;
+      final root = await saveRoot;
       final dir = Directory('$root/${_sanitize(item.animeTitle)}');
       await dir.create(recursive: true);
 
-      final filename =
-          '${_sanitize(item.animeTitle)}.EP${item.episodeNumber.toString().padLeft(2, "0")}.${item.quality}.${item.audio}.mp4';
-      final outPath = '${dir.path}/$filename';
+      final outPath = '${dir.path}/${buildFileName(item)}';
       item.outputPath = outPath;
 
-      final tempPath = '$outPath.tmp';
-      final existing = File(tempPath);
-      final startByte = existing.existsSync() ? existing.lengthSync() : 0;
+      if (await File(outPath).exists()) {
+        item.update(
+          status: DownloadStatus.completed,
+          progress: 1.0,
+          statusMessage: 'Already downloaded',
+        );
+        return;
+      }
+
+      final tempPath = '$outPath.part';
+      final partial = File(tempPath);
+      final startByte = await partial.exists() ? await partial.length() : 0;
 
       final response = await _dio.get<ResponseBody>(
         item.sourceUrl,
+        cancelToken: item.cancelToken,
         options: Options(
           responseType: ResponseType.stream,
+          followRedirects: true,
           headers: {
             ...CfSession().dioHeaders,
             if (startByte > 0) 'Range': 'bytes=$startByte-',
@@ -86,75 +103,135 @@ class DownloadManager extends ChangeNotifier {
         ),
       );
 
-      final total =
+      final contentLength =
           int.tryParse(response.headers.value('content-length') ?? '') ?? 0;
-      final resumable = response.statusCode == 206;
+      final resumed = response.statusCode == 206 && startByte > 0;
+
+      // content-length covers only the requested range, so the real size is
+      // what we already have plus what is still coming.
+      final grandTotal = resumed ? startByte + contentLength : contentLength;
 
       item.update(
-        totalBytes: total + (resumable ? startByte : 0),
-        downloadedBytes: resumable ? startByte : 0,
+        totalBytes: grandTotal,
+        downloadedBytes: resumed ? startByte : 0,
       );
 
-      final sink = File(tempPath).openWrite(
-        mode: resumable ? FileMode.append : FileMode.write,
-      );
+      sink = File(tempPath)
+          .openWrite(mode: resumed ? FileMode.append : FileMode.write);
 
-      int downloaded = resumable ? startByte : 0;
-      DateTime lastUiUpdate = DateTime.now();
+      var downloaded = resumed ? startByte : 0;
+      var lastTick = DateTime.now();
 
-      await response.data!.stream.listen(
-        (chunk) {
-          sink.add(chunk);
-          downloaded += chunk.length;
-          final now = DateTime.now();
-          if (now.difference(lastUiUpdate).inMilliseconds > 250) {
-            lastUiUpdate = now;
-            item.update(
-              downloadedBytes: downloaded,
-              progress: total > 0 ? downloaded / total : 0,
-            );
-          }
-        },
-        onError: (e) => item.update(
-          status: DownloadStatus.failed,
-          statusMessage: 'Error: $e',
-        ),
-        onDone: () async {
-          await sink.close();
-          await File(tempPath).rename(outPath);
+      await for (final chunk in response.data!.stream) {
+        if (item.cancelToken.isCancelled) break;
+        sink.add(chunk);
+        downloaded += chunk.length;
+        final now = DateTime.now();
+        if (now.difference(lastTick).inMilliseconds > 250) {
+          lastTick = now;
           item.update(
-            status: DownloadStatus.completed,
-            progress: 1.0,
-            statusMessage: 'Done',
+            downloadedBytes: downloaded,
+            progress: grandTotal > 0 ? downloaded / grandTotal : 0,
           );
-        },
-        cancelOnError: true,
-      ).asFuture();
-    } catch (e) {
+        }
+      }
+
+      await sink.flush();
+      await sink.close();
+      sink = null;
+
+      if (item.cancelToken.isCancelled) {
+        item.update(status: DownloadStatus.cancelled, statusMessage: 'Cancelled');
+        return;
+      }
+
+      await partial.rename(outPath);
       item.update(
-        status: DownloadStatus.failed,
-        statusMessage: 'Failed: $e',
+        status: DownloadStatus.completed,
+        progress: 1.0,
+        statusMessage: 'Done',
       );
+    } on DioException catch (e) {
+      if (CancelToken.isCancel(e)) {
+        item.update(status: DownloadStatus.cancelled, statusMessage: 'Cancelled');
+      } else {
+        item.update(
+          status: DownloadStatus.failed,
+          statusMessage: _friendlyError(e),
+        );
+      }
+    } catch (e) {
+      item.update(status: DownloadStatus.failed, statusMessage: 'Failed: $e');
     } finally {
+      await sink?.close();
       _semaphore.release();
     }
   }
 
+  /// `Naruto - EP001 - Homecoming [1080p][SUB].mp4`
+  ///
+  /// Pad width comes from the series' episode count, so every file in a folder
+  /// shares one width and sorts correctly: 24 eps -> EP01, 700 -> EP001,
+  /// One Piece's 1000+ -> EP0001. Mixed widths would sort EP1000 before EP999.
+  /// episodeNumber guards the case where the count is unknown (0) and would
+  /// otherwise truncate.
+  @visibleForTesting
+  static String buildFileName(DownloadItem item) {
+    final largest =
+        item.totalEpisodes > item.episodeNumber ? item.totalEpisodes : item.episodeNumber;
+    final width = largest.toString().length.clamp(2, 5);
+    final ep = item.episodeNumber.toString().padLeft(width, '0');
+    final title = _sanitize(item.episodeTitle);
+    final namePart = title.isEmpty ? '' : ' - $title';
+    return '${_sanitize(item.animeTitle)} - EP$ep$namePart'
+        ' [${item.quality}][${item.audio.toUpperCase()}].mp4';
+  }
+
+  String _friendlyError(DioException e) => switch (e.type) {
+        DioExceptionType.connectionTimeout ||
+        DioExceptionType.receiveTimeout =>
+          'Timed out — check your connection',
+        DioExceptionType.badResponse =>
+          'Server said ${e.response?.statusCode} — link may have expired',
+        DioExceptionType.connectionError => 'No connection',
+        _ => 'Failed: ${e.message ?? e.type.name}',
+      };
+
   void cancel(DownloadItem item) {
+    if (!item.cancelToken.isCancelled) {
+      item.cancelToken.cancel('user cancelled');
+    }
     item.update(status: DownloadStatus.cancelled, statusMessage: 'Cancelled');
     notifyListeners();
   }
 
+  void retry(DownloadItem item) {
+    if (!item.canRetry) return;
+    item.resetForRetry();
+    notifyListeners();
+    _process(item);
+  }
+
+  /// Removes a queue entry, and its half-finished `.part` file if any.
+  Future<void> remove(DownloadItem item) async {
+    if (item.isActive) cancel(item);
+    queue.remove(item);
+    notifyListeners();
+    if (item.outputPath.isNotEmpty) {
+      final part = File('${item.outputPath}.part');
+      if (await part.exists()) await part.delete();
+    }
+  }
+
   void clearDone() {
-    queue.removeWhere((i) =>
-        i.status == DownloadStatus.completed ||
-        i.status == DownloadStatus.cancelled ||
-        i.status == DownloadStatus.failed);
+    queue.removeWhere((i) => !i.isActive);
     notifyListeners();
   }
 
-  String _sanitize(String s) =>
-      s.replaceAll(RegExp(r'[<>:"/\\|?*]'), '').trim();
+  static String _sanitize(String s) => s
+      .replaceAll(RegExp(r'[<>:"/\\|?*\x00-\x1F]'), '')
+      .replaceAll(RegExp(r'\s+'), ' ')
+      .trim();
 }
 
 class _Semaphore {
@@ -176,8 +253,7 @@ class _Semaphore {
 
   void release() {
     if (_waiters.isNotEmpty) {
-      final c = _waiters.removeAt(0);
-      c.complete();
+      _waiters.removeAt(0).complete();
     } else {
       _count--;
     }

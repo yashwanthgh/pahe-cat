@@ -1,3 +1,4 @@
+import 'package:dio/dio.dart';
 import 'package:flutter/foundation.dart';
 
 enum DownloadStatus { queued, resolving, downloading, completed, failed, cancelled }
@@ -6,10 +7,20 @@ class DownloadItem extends ChangeNotifier {
   final String id;
   final String animeTitle;
   final int episodeNumber;
+  final String episodeTitle;
+  final int totalEpisodes;
   final String quality;
   final String audio;
-  final String sourceUrl;
+
+  /// The kwik.si page URL. Kept so a retry can re-resolve a link that expired.
+  final String kwikUrl;
+
+  /// The direct file URL. Cleared on retry so it gets resolved again.
+  String sourceUrl;
   String outputPath;
+
+  /// Recreated on retry — a cancelled token stays cancelled forever.
+  CancelToken cancelToken = CancelToken();
 
   DownloadStatus _status = DownloadStatus.queued;
   double _progress = 0;
@@ -24,6 +35,9 @@ class DownloadItem extends ChangeNotifier {
     required this.quality,
     required this.audio,
     required this.sourceUrl,
+    this.kwikUrl = '',
+    this.episodeTitle = '',
+    this.totalEpisodes = 0,
     this.outputPath = '',
   });
 
@@ -39,8 +53,9 @@ class DownloadItem extends ChangeNotifier {
       _status == DownloadStatus.downloading;
 
   bool get canRetry =>
-      _status == DownloadStatus.failed ||
-      _status == DownloadStatus.cancelled;
+      _status == DownloadStatus.failed || _status == DownloadStatus.cancelled;
+
+  bool get isCompleted => _status == DownloadStatus.completed;
 
   String get displayName =>
       '$animeTitle — EP $episodeNumber ($quality · ${audio.toUpperCase()})';
@@ -48,10 +63,10 @@ class DownloadItem extends ChangeNotifier {
   String get progressText {
     if (_status == DownloadStatus.resolving) return 'Resolving stream…';
     if (_status == DownloadStatus.downloading && _totalBytes > 0) {
-      final dlMB = _downloadedBytes / 1048576;
-      final totMB = _totalBytes / 1048576;
-      final pct = (_progress * 100).toStringAsFixed(0);
-      return '${dlMB.toStringAsFixed(1)} / ${totMB.toStringAsFixed(1)} MB ($pct%)';
+      final dl = _downloadedBytes / 1048576;
+      final tot = _totalBytes / 1048576;
+      final pct = (_progress * 100).clamp(0, 100).toStringAsFixed(0);
+      return '${dl.toStringAsFixed(1)} / ${tot.toStringAsFixed(1)} MB ($pct%)';
     }
     return _statusMessage;
   }
@@ -64,10 +79,20 @@ class DownloadItem extends ChangeNotifier {
     int? totalBytes,
   }) {
     if (status != null) _status = status;
-    if (progress != null) _progress = progress;
+    if (progress != null) _progress = progress.clamp(0.0, 1.0);
     if (statusMessage != null) _statusMessage = statusMessage;
     if (downloadedBytes != null) _downloadedBytes = downloadedBytes;
     if (totalBytes != null) _totalBytes = totalBytes;
+    notifyListeners();
+  }
+
+  void resetForRetry() {
+    cancelToken = CancelToken();
+    _status = DownloadStatus.queued;
+    _progress = 0;
+    _statusMessage = 'Queued';
+    _downloadedBytes = 0;
+    _totalBytes = 0;
     notifyListeners();
   }
 }
