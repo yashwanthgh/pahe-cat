@@ -1,14 +1,15 @@
 import 'dart:async';
 import 'dart:io';
-import 'package:dio/dio.dart';
+import 'package:dio/dio.dart' show CancelToken, DioException, DioExceptionType;
+import 'package:flutter/material.dart' show OverlayState;
 import 'package:flutter/foundation.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import '../models/download_item.dart';
 import '../models/stream_source.dart';
 import 'animepahe_api.dart';
-import 'cf_session.dart';
 import 'settings.dart';
+import 'webview_downloader.dart';
 
 class DownloadManager extends ChangeNotifier {
   static final DownloadManager _i = DownloadManager._();
@@ -31,11 +32,6 @@ class DownloadManager extends ChangeNotifier {
   /// Spacing between resolutions, for the same reason.
   static const _resolveGap = Duration(milliseconds: 600);
 
-  late final Dio _dio = Dio(BaseOptions(
-    connectTimeout: const Duration(seconds: 20),
-    receiveTimeout: Duration.zero, // streaming — no idle cap
-  ));
-
   /// Where files are written: the folder chosen in Settings, else the
   /// platform default. Read from storage rather than injected so the manager
   /// stays a plain singleton, and so a change in Settings applies to the next
@@ -51,6 +47,12 @@ class DownloadManager extends ChangeNotifier {
   /// something a plain service has no business holding. Set once at startup.
   Future<({String url, String referer})> Function(String downloadPageUrl)?
       resolver;
+
+  /// Supplies the overlay the transfer's WebView is mounted into.
+  ///
+  /// The file cannot be fetched by Dart at all — see [WebViewDownloader] — so
+  /// downloading needs a widget tree just as resolving does.
+  OverlayState? Function()? overlayProvider;
 
   void enqueue({
     required String animeTitle,
@@ -242,73 +244,6 @@ class DownloadManager extends ChangeNotifier {
     item.refererUrl = resolved.referer;
   }
 
-  /// Opens the file stream, trying progressively plainer headers.
-  ///
-  /// A 403 from the media host does not say which header offended it, and
-  /// guessing cost several rounds. Each variant is tried in turn and the one
-  /// that worked is logged, so the answer comes from the server rather than
-  /// from speculation:
-  ///
-  ///  * everything — the file host's own cookies, referer and User-Agent
-  ///  * no cookies — some CDNs refuse a request carrying unexpected ones
-  ///  * referer and User-Agent only, as a plain browser would send
-  ///  * nothing but a User-Agent
-  Future<Response<ResponseBody>> _openStream(
-      DownloadItem item, int startByte) async {
-    final full = await CfSession()
-        .fileHeaders(item.sourceUrl, referer: item.refererUrl);
-    final noCookies = {...full}..remove('Cookie');
-    final minimal = {
-      'User-Agent': full['User-Agent'] ?? '',
-      if (item.refererUrl.isNotEmpty) 'Referer': item.refererUrl,
-    };
-    final bare = {'User-Agent': full['User-Agent'] ?? ''};
-
-    final variants = <String, Map<String, String>>{
-      'full': full,
-      'no-cookies': noCookies,
-      'referer-only': minimal,
-      'ua-only': bare,
-    };
-
-    Object? last;
-    for (final entry in variants.entries) {
-      try {
-        final r = await _dio.get<ResponseBody>(
-          item.sourceUrl,
-          cancelToken: item.cancelToken,
-          options: Options(
-            responseType: ResponseType.stream,
-            followRedirects: true,
-            headers: {
-              ...entry.value,
-              if (startByte > 0) 'Range': 'bytes=$startByte-',
-            },
-            // Handled here rather than thrown, so the next variant gets a go.
-            validateStatus: (_) => true,
-          ),
-        );
-        final code = r.statusCode ?? 0;
-        if (code >= 200 && code < 300) {
-          debugPrint('DOWNLOAD: ${entry.key} headers accepted ($code)');
-          return r;
-        }
-        debugPrint('DOWNLOAD: ${entry.key} refused with $code'
-            ' (server: ${r.headers.value('server')},'
-            ' cf-ray: ${r.headers.value('cf-ray')})');
-        last = DioException(
-          requestOptions: r.requestOptions,
-          response: r,
-          type: DioExceptionType.badResponse,
-        );
-      } on DioException catch (e) {
-        if (CancelToken.isCancel(e)) rethrow;
-        debugPrint('DOWNLOAD: ${entry.key} threw ${e.type}');
-        last = e;
-      }
-    }
-    throw last ?? Exception('Could not open ${item.sourceUrl}');
-  }
 
   /// Creates the series folder, falling back if the chosen root is refused.
   ///
@@ -372,44 +307,56 @@ class DownloadManager extends ChangeNotifier {
       final partial = File(tempPath);
       final startByte = await partial.exists() ? await partial.length() : 0;
 
-      final response = await _openStream(item, startByte);
-
-      final contentLength =
-          int.tryParse(response.headers.value('content-length') ?? '') ?? 0;
-      final resumed = response.statusCode == 206 && startByte > 0;
-
-      // content-length covers only the requested range, so the real size is
-      // what we already have plus what is still coming.
-      final grandTotal = resumed ? startByte + contentLength : contentLength;
-
-      item.update(
-        totalBytes: grandTotal,
-        downloadedBytes: resumed ? startByte : 0,
-      );
-
-      sink = File(tempPath)
-          .openWrite(mode: resumed ? FileMode.append : FileMode.write);
-
-      var downloaded = resumed ? startByte : 0;
-      var lastTick = DateTime.now();
-
-      await for (final chunk in response.data!.stream) {
-        if (item.cancelToken.isCancelled) break;
-        sink.add(chunk);
-        downloaded += chunk.length;
-        final now = DateTime.now();
-        if (now.difference(lastTick).inMilliseconds > 250) {
-          lastTick = now;
-          item.update(
-            downloadedBytes: downloaded,
-            progress: grandTotal > 0 ? downloaded / grandTotal : 0,
-          );
-        }
+      final overlay = overlayProvider?.call();
+      if (overlay == null) {
+        throw StateError('App is not ready to download yet');
       }
 
-      await sink.flush();
-      await sink.close();
-      sink = null;
+      var resumeFrom = startByte;
+      var lastTick = DateTime.now();
+
+      Future<void> transfer() async {
+        sink = File(tempPath).openWrite(
+            mode: resumeFrom > 0 ? FileMode.append : FileMode.write);
+        item.update(
+          downloadedBytes: resumeFrom,
+          progress: 0,
+          statusMessage: 'Downloading…',
+        );
+        await WebViewDownloader.download(
+          overlay: overlay,
+          url: item.sourceUrl,
+          referer: item.refererUrl,
+          startByte: resumeFrom,
+          sink: sink!,
+          onProgress: (received, total) {
+            final now = DateTime.now();
+            if (now.difference(lastTick).inMilliseconds < 250) return;
+            lastTick = now;
+            item.update(
+              downloadedBytes: received,
+              totalBytes: total,
+              progress: total > 0 ? received / total : 0,
+            );
+          },
+          isCancelled: () => item.cancelToken.isCancelled,
+        );
+        await sink!.flush();
+        await sink!.close();
+        sink = null;
+      }
+
+      try {
+        await transfer();
+      } on DownloadNeedsRestart {
+        // The host ignored the Range request, so the partial file is useless.
+        debugPrint('DOWNLOAD: resume refused, starting over');
+        await sink?.close();
+        sink = null;
+        if (await partial.exists()) await partial.delete();
+        resumeFrom = 0;
+        await transfer();
+      }
 
       if (item.cancelToken.isCancelled) {
         item.update(status: DownloadStatus.cancelled, statusMessage: 'Cancelled');

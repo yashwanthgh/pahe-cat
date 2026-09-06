@@ -52,6 +52,8 @@ class _PaheCatAppState extends State<PaheCatApp> {
       }
       return KwikResolver.resolve(overlay, url);
     };
+    // The transfer needs one too: the file cannot be fetched by Dart at all.
+    DownloadManager().overlayProvider = () => _navigatorKey.currentState?.overlay;
   }
 
   @override
