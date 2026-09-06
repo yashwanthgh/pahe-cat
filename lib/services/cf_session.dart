@@ -649,7 +649,16 @@ class _CfGatewayWidgetState extends State<CfGatewayWidget> {
     // plainly and ask nothing further. Running the diagnosis here would fire
     // six more requests at a host that is already refusing us, which is how
     // the 429s started in the first place.
-    if (result.startsWith('challenging')) {
+    // A fetch aborted because the page navigated under it reads as a load
+    // failure, and Cloudflare's check navigates the page as part of doing its
+    // work — so this is the check running, not a fault. Reported as a fault it
+    // put "error:TypeError: Load failed" in front of the user and triggered a
+    // diagnosis of a working system.
+    final aborted = result.contains('Load failed') ||
+        result.contains('Failed to fetch') ||
+        result.contains('cancelled');
+
+    if (result.startsWith('challenging') || aborted) {
       setState(() => _diag = 'verifying, this can take a moment');
       return;
     }
