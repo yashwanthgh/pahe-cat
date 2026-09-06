@@ -1,11 +1,10 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:cached_network_image/cached_network_image.dart';
+import '../widgets/cf_image.dart';
 import 'package:flutter_animate/flutter_animate.dart';
 import 'package:percent_indicator/linear_percent_indicator.dart';
 import '../models/watch_progress.dart';
 import '../services/watch_progress_db.dart';
-import '../services/cf_session.dart';
 import '../theme.dart';
 
 final _libraryProvider = FutureProvider<List<WatchProgress>>((ref) async {
@@ -126,19 +125,11 @@ class _LibraryTile extends StatelessWidget {
         contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
         leading: ClipRRect(
           borderRadius: BorderRadius.circular(10),
-          child: CachedNetworkImage(
-            imageUrl: progress.animePoster,
-            httpHeaders: CfSession().dioHeaders,
+          child: CfImage(
+            url: progress.animePoster,
             width: 48,
             height: 68,
             fit: BoxFit.cover,
-            errorWidget: (_, __, ___) => Container(
-              width: 48,
-              height: 68,
-              color: PaheColors.border,
-              child: const Icon(Icons.broken_image_rounded,
-                  color: PaheColors.textMuted, size: 20),
-            ),
           ),
         ),
         title: Text(

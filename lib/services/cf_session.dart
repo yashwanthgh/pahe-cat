@@ -1,4 +1,6 @@
 import 'dart:async';
+import 'dart:convert';
+import 'dart:typed_data';
 import 'dart:io' show Platform;
 import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
@@ -18,6 +20,7 @@ class CfSession {
   factory CfSession() => _instance;
 
   InAppWebViewController? _controller;
+
   bool _ready = false;
   String? _uaFromWebView;
 
@@ -122,6 +125,49 @@ class CfSession {
       throw Exception('Empty response for $url');
     }
     return body;
+  }
+
+  /// Fetches binary content — posters and snapshots — through the cleared page.
+  ///
+  /// The image host (`i.animepahe.*`) is a different origin from the site and
+  /// carries its own Cloudflare protection, so neither a Referer nor the
+  /// site's clearance cookie is enough: both return 403. Reading the bytes
+  /// from inside the page sidesteps that the same way the API calls do.
+  Future<Uint8List> fetchBytes(String url) async {
+    // Known limitation: this fails for animepahe's poster host. That host is
+    // a separate origin serving no CORS headers, so reading its bytes here
+    // raises "TypeError: Failed to fetch", and a plain HTTP request is refused
+    // with a Cloudflare 403 since it issues its own clearance. Parking a
+    // second WebView on that origin does work around CORS, but running two
+    // challenges at once starved the main one and left the app on a loading
+    // screen, so posters fall back to a placeholder for now.
+    final c = _controller;
+    if (c == null) throw StateError('Cloudflare session is not ready yet');
+
+    final result = await c.callAsyncJavaScript(
+      functionBody: r'''
+        const res = await fetch(url, { credentials: 'include' });
+        if (!res.ok) throw new Error('HTTP ' + res.status);
+        const blob = await res.blob();
+        return await new Promise((resolve, reject) => {
+          const reader = new FileReader();
+          reader.onloadend = () => {
+            const s = String(reader.result);
+            resolve(s.slice(s.indexOf(',') + 1));
+          };
+          reader.onerror = () => reject(new Error('read failed'));
+          reader.readAsDataURL(blob);
+        });
+      ''',
+      arguments: {'url': url},
+    );
+
+    if (result?.error != null) {
+      throw Exception('Image failed: ${result!.error}');
+    }
+    final b64 = result?.value;
+    if (b64 is! String || b64.isEmpty) throw Exception('Empty image $url');
+    return base64Decode(b64);
   }
 }
 
@@ -267,6 +313,7 @@ class _CfGatewayWidgetState extends State<CfGatewayWidget> {
               ),
             ),
           ),
+
       ],
     );
   }

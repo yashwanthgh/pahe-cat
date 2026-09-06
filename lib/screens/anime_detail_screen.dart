@@ -1,12 +1,11 @@
 import 'dart:ui';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:cached_network_image/cached_network_image.dart';
+import '../widgets/cf_image.dart';
 import '../models/anime.dart';
 import '../models/episode.dart';
 import '../models/watch_progress.dart';
 import '../services/providers.dart';
-import '../services/cf_session.dart';
 import '../theme.dart';
 import 'episode_player_screen.dart';
 
@@ -150,9 +149,9 @@ class _HeroBanner extends StatelessWidget {
     return Stack(
       fit: StackFit.expand,
       children: [
-        CachedNetworkImage(
-            imageUrl: anime.poster,
-            httpHeaders: CfSession().dioHeaders, fit: BoxFit.cover),
+        CfImage(
+            url: anime.poster,
+            fit: BoxFit.cover),
         BackdropFilter(
           filter: ImageFilter.blur(sigmaX: 8, sigmaY: 8),
           child: Container(color: Colors.black.withOpacity(0.5)),
@@ -160,10 +159,9 @@ class _HeroBanner extends StatelessWidget {
         Center(
           child: ClipRRect(
             borderRadius: BorderRadius.circular(16),
-            child: CachedNetworkImage(
-            imageUrl: anime.poster,
-            httpHeaders: CfSession().dioHeaders,
-              height: 220,
+            child: CfImage(
+            url: anime.poster,
+            height: 220,
               fit: BoxFit.cover,
             ),
           ),

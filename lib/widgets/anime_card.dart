@@ -1,8 +1,6 @@
 import 'package:flutter/material.dart';
-import 'package:cached_network_image/cached_network_image.dart';
-import 'package:shimmer/shimmer.dart';
+import '../widgets/cf_image.dart';
 import '../models/anime.dart';
-import '../services/cf_session.dart';
 import '../theme.dart';
 
 class AnimeCard extends StatelessWidget {
@@ -31,22 +29,9 @@ class AnimeCard extends StatelessWidget {
               child: Stack(
                 fit: StackFit.expand,
                 children: [
-                  CachedNetworkImage(
-                    imageUrl: anime.poster,
-                    // animepahe's image host enforces hotlink protection, so a
-                    // bare request returns no image.
-                    httpHeaders: CfSession().dioHeaders,
-                    fit: BoxFit.cover,
-                    placeholder: (_, __) => Shimmer.fromColors(
-                      baseColor: PaheColors.card,
-                      highlightColor: PaheColors.cardHover,
-                      child: Container(color: PaheColors.card),
-                    ),
-                    errorWidget: (_, __, ___) => Container(
-                      color: PaheColors.card,
-                      child: const Icon(Icons.broken_image_rounded,
-                          color: PaheColors.textMuted),
-                    ),
+                  CfImage(
+            url: anime.poster,
+            fit: BoxFit.cover,
                   ),
                   // type badge
                   Positioned(
