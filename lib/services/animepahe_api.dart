@@ -335,17 +335,37 @@ class AnimePaheApi {
 
   /// The airing feed returns episode releases, not anime records — the fields
   /// are anime_title / anime_session / snapshot, so it needs its own mapping.
-  Future<List<Anime>> getRecent({int page = 1}) async {
-    if (PreviewMode.enabled) return PreviewMode.catalogue;
-    final r = await _getJson({'m': 'airing', 'page': '$page'});
-    final data = r['data'] as List? ?? [];
-    final seen = <String>{};
-    final out = <Anime>[];
-    for (final j in data) {
-      final a = Anime.fromAiring(j as Map<String, dynamic>);
-      if (a.session.isEmpty || !seen.add(a.session)) continue; // one card per show
-      out.add(a);
+  ///
+  /// Collapsing to one card per show means a single page yields far fewer
+  /// cards than it has entries: a show that released three episodes appears
+  /// once. [pages] therefore walks several pages, or the home screen looks
+  /// half-empty.
+  Future<({List<Anime> anime, int lastPage})> getRecent({
+    int page = 1,
+    int pages = 1,
+    Set<String>? exclude,
+  }) async {
+    if (PreviewMode.enabled) {
+      return (anime: PreviewMode.catalogue, lastPage: 1);
     }
-    return out;
+    final seen = <String>{...?exclude};
+    final out = <Anime>[];
+    var lastPage = page;
+
+    for (var p = page; p < page + pages; p++) {
+      final r = await _getJson({'m': 'airing', 'page': '$p'});
+      lastPage = (r['last_page'] as int?) ?? p;
+      for (final j in (r['data'] as List? ?? [])) {
+        final a = Anime.fromAiring(j as Map<String, dynamic>);
+        if (a.session.isEmpty || !seen.add(a.session)) continue;
+        out.add(a);
+      }
+      if (p >= lastPage) break;
+      // Spaced out: bursts of page requests are answered with 429.
+      if (p < page + pages - 1) {
+        await Future.delayed(const Duration(milliseconds: 250));
+      }
+    }
+    return (anime: out, lastPage: lastPage);
   }
 }

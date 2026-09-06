@@ -33,9 +33,6 @@ SliverGridDelegate _posterGridFor(double width) {
 }
 
 final _searchQueryProvider = StateProvider<String>((ref) => '');
-final _recentProvider = FutureProvider<List<Anime>>((ref) async {
-  return AnimePaheApi().getRecent();
-});
 final _searchResultsProvider =
     FutureProvider.family<List<Anime>, String>((ref, query) async {
   if (query.isEmpty) return [];
@@ -96,13 +93,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
             ),
             Expanded(
               child: query.isEmpty
-                  ? ListView(
-                      padding: EdgeInsets.zero,
-                      children: [
-                        const _ContinueWatchingRow(),
-                        _RecentGrid(shrinkWrap: true),
-                      ],
-                    )
+                  ? const _RecentGrid()
                   : _SearchResults(query: query),
             ),
           ],
@@ -290,29 +281,47 @@ class _ContinueCard extends StatelessWidget {
                     height: 1.25,
                   ),
                 ),
-                Row(
+                Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    const Icon(Icons.play_circle_fill_rounded,
-                        color: PaheColors.accent, size: 16),
-                    const SizedBox(width: 6),
-                    Expanded(
-                      child: Text(
-                        progress.resumeLabel,
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                        style: const TextStyle(
-                          color: PaheColors.textSecondary,
-                          fontSize: 11,
-                          fontWeight: FontWeight.w600,
+                    if (progress.hasPartialEpisode)
+                      Padding(
+                        padding: const EdgeInsets.only(bottom: 6),
+                        child: ClipRRect(
+                          borderRadius: BorderRadius.circular(3),
+                          child: LinearProgressIndicator(
+                            value: progress.resumePosition,
+                            minHeight: 3,
+                            backgroundColor: PaheColors.cardHover,
+                            valueColor: const AlwaysStoppedAnimation<Color>(
+                                PaheColors.accent),
+                          ),
                         ),
                       ),
+                    Row(
+                      children: [
+                        const Icon(Icons.play_circle_fill_rounded,
+                            color: PaheColors.accent, size: 16),
+                        const SizedBox(width: 6),
+                        Expanded(
+                          child: Text(
+                            progress.resumeLabel,
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: const TextStyle(
+                              color: PaheColors.textSecondary,
+                              fontSize: 11,
+                              fontWeight: FontWeight.w600,
+                            ),
+                          ),
+                        ),
+                        Text(
+                          progress.lastSeenLabel,
+                          style: const TextStyle(
+                              color: PaheColors.textMuted, fontSize: 10),
+                        ),
+                      ],
                     ),
-                    if (progress.totalEpisodes > 0)
-                      Text(
-                        progress.progressLabel,
-                        style: const TextStyle(
-                            color: PaheColors.textMuted, fontSize: 10),
-                      ),
                   ],
                 ),
               ],
@@ -324,49 +333,89 @@ class _ContinueCard extends StatelessWidget {
   }
 }
 
-class _RecentGrid extends ConsumerWidget {
-  /// Nested inside a scrolling list on the home screen, so it must not try to
-  /// scroll or size itself to infinity.
-  final bool shrinkWrap;
-  const _RecentGrid({this.shrinkWrap = false});
+/// The recently-aired grid, paged.
+///
+/// Loads more as it nears the bottom instead of ending in dead space: the
+/// airing feed collapses to one card per show, so a single page left most of
+/// a desktop window empty.
+class _RecentGrid extends ConsumerStatefulWidget {
+  const _RecentGrid();
 
   @override
-  Widget build(BuildContext context, WidgetRef ref) {
-    final recent = ref.watch(_recentProvider);
-    return recent.when(
-      loading: () => _ShimmerGrid(shrinkWrap: shrinkWrap),
-      error: (e, _) => _ErrorState(message: e.toString()),
-      data: (list) => Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Padding(
-            padding: const EdgeInsets.fromLTRB(20, 8, 20, 12),
-            child: Text(
-              'Recently Aired',
-              style: TextStyle(
-                color: PaheColors.textSecondary,
-                fontSize: 13,
-                fontWeight: FontWeight.w700,
-                letterSpacing: 0.5,
+  ConsumerState<_RecentGrid> createState() => _RecentGridState();
+}
+
+class _RecentGridState extends ConsumerState<_RecentGrid> {
+  final _scroll = ScrollController();
+
+  @override
+  void initState() {
+    super.initState();
+    _scroll.addListener(_maybeLoadMore);
+  }
+
+  @override
+  void dispose() {
+    _scroll.removeListener(_maybeLoadMore);
+    _scroll.dispose();
+    super.dispose();
+  }
+
+  /// Fetches the next pages before the bottom is actually reached, so
+  /// scrolling does not stop dead while waiting.
+  void _maybeLoadMore() {
+    if (!_scroll.hasClients) return;
+    final remaining = _scroll.position.maxScrollExtent - _scroll.position.pixels;
+    if (remaining < 900) ref.read(airingProvider.notifier).loadMore();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final state = ref.watch(airingProvider);
+
+    if (state.loading) return const _ShimmerGrid();
+    if (state.anime.isEmpty) {
+      return _ErrorState(
+        message: state.error?.toString() ?? 'Nothing to show yet.',
+      );
+    }
+
+    return LayoutBuilder(
+      builder: (ctx, box) => CustomScrollView(
+        controller: _scroll,
+        slivers: [
+          const SliverToBoxAdapter(child: _ContinueWatchingRow()),
+          const SliverToBoxAdapter(
+            child: Padding(
+              padding: EdgeInsets.fromLTRB(20, 8, 20, 12),
+              child: Text(
+                'Recently aired',
+                style: TextStyle(
+                  color: PaheColors.textSecondary,
+                  fontSize: 13,
+                  fontWeight: FontWeight.w700,
+                  letterSpacing: 0.5,
+                ),
               ),
             ),
           ),
-          // Expanded only works inside a Column with bounded height. Nested
-          // in the home screen's scrolling list there is no such bound, so the
-          // grid sizes to its content there instead.
-          _maybeExpanded(
-            LayoutBuilder(
-              builder: (ctx, box) => GridView.builder(
-                padding: const EdgeInsets.symmetric(horizontal: 12),
-                gridDelegate: _posterGridFor(box.maxWidth - 24),
-                itemCount: list.length,
-                shrinkWrap: shrinkWrap,
-                physics: shrinkWrap ? const NeverScrollableScrollPhysics() : null,
-                itemBuilder: (ctx, i) => AnimeCard(
-                  anime: list[i],
-                  onTap: () => _open(context, list[i]),
+          SliverPadding(
+            padding: const EdgeInsets.symmetric(horizontal: 12),
+            sliver: SliverGrid(
+              gridDelegate: _posterGridFor(box.maxWidth - 24),
+              delegate: SliverChildBuilderDelegate(
+                (ctx, i) => AnimeCard(
+                  anime: state.anime[i],
+                  onTap: () => _open(context, state.anime[i]),
                 ),
+                childCount: state.anime.length,
               ),
+            ),
+          ),
+          SliverToBoxAdapter(
+            child: _GridFooter(
+              state: state,
+              onRetry: () => ref.read(airingProvider.notifier).retry(),
             ),
           ),
         ],
@@ -374,11 +423,67 @@ class _RecentGrid extends ConsumerWidget {
     );
   }
 
-  Widget _maybeExpanded(Widget child) =>
-      shrinkWrap ? child : Expanded(child: child);
-
   void _open(BuildContext ctx, Anime a) {
     Navigator.push(ctx, MaterialPageRoute(builder: (_) => AnimeDetailScreen(anime: a)));
+  }
+}
+
+/// Says what the bottom of the grid is doing, rather than just stopping.
+class _GridFooter extends StatelessWidget {
+  final AiringState state;
+  final VoidCallback onRetry;
+
+  const _GridFooter({required this.state, required this.onRetry});
+
+  @override
+  Widget build(BuildContext context) {
+    if (state.error != null) {
+      return Padding(
+        padding: const EdgeInsets.all(20),
+        child: Center(
+          child: Column(
+            children: [
+              Text(
+                // 429 is animepahe rate-limiting a burst, not a real failure,
+                // so it is worth saying so instead of showing a raw error.
+                state.error.toString().contains('429')
+                    ? 'animepahe asked us to slow down.'
+                    : 'Could not load more right now.',
+                style: const TextStyle(
+                    color: PaheColors.textMuted, fontSize: 12),
+              ),
+              const SizedBox(height: 8),
+              TextButton(onPressed: onRetry, child: const Text('Try again')),
+            ],
+          ),
+        ),
+      );
+    }
+    if (state.loadingMore) {
+      return const Padding(
+        padding: EdgeInsets.all(24),
+        child: Center(
+          child: SizedBox(
+            width: 22,
+            height: 22,
+            child: CircularProgressIndicator(
+                strokeWidth: 2, color: PaheColors.accent),
+          ),
+        ),
+      );
+    }
+    if (!state.hasMore) {
+      return const Padding(
+        padding: EdgeInsets.all(24),
+        child: Center(
+          child: Text(
+            'That is everything airing right now',
+            style: TextStyle(color: PaheColors.textMuted, fontSize: 11),
+          ),
+        ),
+      );
+    }
+    return const SizedBox(height: 24);
   }
 }
 
@@ -424,10 +529,7 @@ class _SearchResults extends ConsumerWidget {
 }
 
 class _ShimmerGrid extends StatelessWidget {
-  /// Must not scroll or size to infinity when nested in the home screen's own
-  /// scrolling list, which is unbounded vertically.
-  final bool shrinkWrap;
-  const _ShimmerGrid({this.shrinkWrap = false});
+  const _ShimmerGrid();
 
   @override
   Widget build(BuildContext context) {
@@ -435,9 +537,7 @@ class _ShimmerGrid extends StatelessWidget {
       builder: (ctx, box) => GridView.builder(
       padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
       gridDelegate: _posterGridFor(box.maxWidth - 24),
-      itemCount: 9,
-      shrinkWrap: shrinkWrap,
-      physics: shrinkWrap ? const NeverScrollableScrollPhysics() : null,
+      itemCount: 12,
       itemBuilder: (_, __) => Shimmer.fromColors(
         baseColor: PaheColors.card,
         highlightColor: PaheColors.cardHover,

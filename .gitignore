@@ -28,7 +28,14 @@ ios/Flutter/.last_build_id
 ios/Pods/
 macos/Flutter/GeneratedPluginRegistrant.swift
 macos/Flutter/ephemeral/
-*.xcworkspace
+macos/Pods/
+# Not *.xcworkspace: that blanket rule also excluded macos/Runner.xcworkspace,
+# which Flutter needs to recognise the project at all. Without it CI failed
+# with "No macOS desktop project configured" while local builds worked, since
+# the file exists on disk and is only missing from the repository. Only the
+# per-user Xcode state is excluded.
+**/xcuserdata/
+**/*.xcworkspace/xcuserdata/
 
 # Windows/Linux
 windows/flutter/generated_plugins.cmake

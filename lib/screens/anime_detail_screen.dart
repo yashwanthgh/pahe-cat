@@ -118,6 +118,7 @@ class AnimeDetailScreen extends ConsumerWidget {
                   anime: anime,
                   isWatched: episodes.episodes[i].number <=
                       (progress.valueOrNull?.lastEpisode ?? 0),
+                  siblings: episodes.episodes,
                 ),
                 childCount: episodes.episodes.length,
               ),
@@ -321,7 +322,11 @@ class _ContinueButton extends StatelessWidget {
       onTap: () => Navigator.push(
         context,
         MaterialPageRoute(
-          builder: (_) => EpisodePlayerScreen(anime: anime, episode: target),
+          builder: (_) => EpisodePlayerScreen(
+            anime: anime,
+            episode: target,
+            siblings: state.episodes,
+          ),
         ),
       ),
     );
@@ -386,10 +391,14 @@ class _EpisodeTile extends ConsumerWidget {
   final Anime anime;
   final bool isWatched;
 
+  /// Passed through so the player can skip to the next episode itself.
+  final List<Episode> siblings;
+
   const _EpisodeTile({
     required this.episode,
     required this.anime,
     required this.isWatched,
+    this.siblings = const [],
   });
 
   @override
@@ -452,6 +461,7 @@ class _EpisodeTile extends ConsumerWidget {
               builder: (_) => EpisodePlayerScreen(
                 anime: anime,
                 episode: episode,
+                siblings: siblings,
               ),
             ),
           ),

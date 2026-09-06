@@ -47,7 +47,9 @@ dev_dependencies:
 flutter:
   uses-material-design: true
   assets:
-    - assets/images/
+    # assets/images/ was declared here but never populated. git cannot track an
+    # empty directory, so the Windows build failed outright with "unable to
+    # find directory entry in pubspec.yaml".
     - assets/icon/
 
   # Bundled rather than fetched by google_fonts at runtime: on a cold start

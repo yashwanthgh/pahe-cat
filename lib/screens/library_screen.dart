@@ -146,11 +146,41 @@ class _LibraryTile extends StatelessWidget {
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             const SizedBox(height: 4),
+            // Which episode this series is actually sitting on, and when it
+            // was last touched — the two things needed to tell a shelf of
+            // half-watched series apart.
+            Row(
+              children: [
+                Expanded(
+                  child: Text(
+                    progress.hasPartialEpisode
+                        ? 'EP ${progress.resumeEpisode} · '
+                            '${(progress.resumePosition * 100).round()}% in'
+                        : 'Last seen EP ${progress.lastSeenEpisode}',
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(
+                      color: PaheColors.textSecondary,
+                      fontSize: 11,
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
+                ),
+                Text(
+                  progress.lastSeenLabel,
+                  style: const TextStyle(
+                      color: PaheColors.textMuted, fontSize: 10),
+                ),
+              ],
+            ),
+            const SizedBox(height: 3),
             Text(
-              progress.progressLabel,
+              progress.totalEpisodes > 0
+                  ? progress.progressLabel
+                  : '${progress.lastEpisode} watched',
               style: const TextStyle(
                 color: PaheColors.textMuted,
-                fontSize: 11,
+                fontSize: 10,
               ),
             ),
             const SizedBox(height: 6),

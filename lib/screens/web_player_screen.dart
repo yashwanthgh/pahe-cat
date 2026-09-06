@@ -29,23 +29,53 @@ class WebPlayerScreen extends StatefulWidget {
   /// had been watched before this one.
   final void Function(double fraction)? onProgress;
 
+  /// Where to start, as a 0-1 fraction. Recording a position is only half of
+  /// resuming — without seeking to it the player always began at zero.
+  final double startAt;
+
   const WebPlayerScreen({
     super.key,
     required this.kwikUrl,
     required this.title,
     this.subtitle = '',
     this.onProgress,
+    this.startAt = 0,
   });
 
   @override
   State<WebPlayerScreen> createState() => _WebPlayerScreenState();
 }
 
+/// Finds the video element wherever kwik put it.
+///
+/// A plain `document.querySelector('video')` is not enough: the player may sit
+/// inside a nested frame, in which case the top document has no video at all
+/// and the position silently never records — which looks exactly like an
+/// episode nobody watched, so resume never fires. Same-origin frames are
+/// searched too; a cross-origin one throws on access and is skipped.
+const String _videoFinder = r'''
+  function pcFindVideo() {
+    var v = document.querySelector('video');
+    if (v) return v;
+    for (var i = 0; i < window.frames.length; i++) {
+      try {
+        var d = window.frames[i].document;
+        var f = d && d.querySelector('video');
+        if (f) return f;
+      } catch (e) { /* cross-origin frame */ }
+    }
+    return null;
+  }
+''';
+
 class _WebPlayerScreenState extends State<WebPlayerScreen> {
   InAppWebViewController? _c;
   Timer? _poll;
+  Timer? _seekTimer;
   bool _loading = true;
+  bool _sought = false;
   double _fraction = 0;
+  String _lastDiag = '';
 
   @override
   void initState() {
@@ -62,8 +92,46 @@ class _WebPlayerScreenState extends State<WebPlayerScreen> {
   @override
   void dispose() {
     _poll?.cancel();
+    _seekTimer?.cancel();
     if (_fraction > _openedMarker) widget.onProgress?.call(_fraction);
     super.dispose();
+  }
+
+  /// Seeks to the saved position once the video knows how long it is.
+  ///
+  /// The duration is not available at load: hls.js has to fetch the playlist
+  /// first, so a seek attempted immediately is silently discarded. This keeps
+  /// trying briefly and gives up rather than fighting a video that never
+  /// reports a duration.
+  void _seekToStart() {
+    if (widget.startAt <= 0.01 || _sought) return;
+    var attempts = 0;
+    _seekTimer?.cancel();
+    _seekTimer = Timer.periodic(const Duration(milliseconds: 500), (t) async {
+      final c = _c;
+      if (!mounted || _sought || c == null || ++attempts > 40) {
+        t.cancel();
+        return;
+      }
+      try {
+        final r = await c.evaluateJavascript(source: '''
+          (function () {
+            $_videoFinder
+            var v = pcFindVideo();
+            if (!v || !v.duration || !isFinite(v.duration)) return '0';
+            v.currentTime = ${widget.startAt} * v.duration;
+            return '1';
+          })()
+        ''');
+        if (r?.toString().trim() == '1') {
+          _sought = true;
+          _fraction = widget.startAt;
+          t.cancel();
+        }
+      } catch (_) {
+        // Retried on the next tick.
+      }
+    });
   }
 
   /// Reads playback position straight off the video element.
@@ -76,14 +144,27 @@ class _WebPlayerScreenState extends State<WebPlayerScreen> {
       final c = _c;
       if (c == null || !mounted) return;
       try {
-        final r = await c.evaluateJavascript(source: r'''
+        final r = await c.evaluateJavascript(source: '''
           (function () {
-            var v = document.querySelector('video');
-            if (!v || !v.duration || !isFinite(v.duration)) return '';
+            $_videoFinder
+            var v = pcFindVideo();
+            if (!v) return 'novideo:frames=' + window.frames.length;
+            if (!v.duration || !isFinite(v.duration)) return 'noduration';
             return (v.currentTime / v.duration).toFixed(4);
           })()
         ''');
-        final f = double.tryParse(r?.toString().trim() ?? '');
+        final raw = r?.toString().trim() ?? '';
+        // Reported because a player that hands back no position is
+        // indistinguishable from an episode nobody watched, and that
+        // difference is exactly what decides whether resume works.
+        if (raw.startsWith('novideo') || raw == 'noduration') {
+          if (_lastDiag != raw) {
+            _lastDiag = raw;
+            debugPrint('PLAYER: no position available ($raw)');
+          }
+          return;
+        }
+        final f = double.tryParse(raw);
         // Monotonic: the furthest point reached is what gets remembered.
         if (f != null && f > _fraction) {
           _fraction = f;
@@ -133,6 +214,7 @@ class _WebPlayerScreenState extends State<WebPlayerScreen> {
                       onWebViewCreated: (c) => _c = c,
                       onLoadStop: (c, url) {
                         if (mounted) setState(() => _loading = false);
+                        _seekToStart();
                         _startTracking();
                       },
                       // The embed pops adverts on click. Anything that is not

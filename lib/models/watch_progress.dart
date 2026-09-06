@@ -65,6 +65,24 @@ class WatchProgress {
     return 'EP $continueEpisode';
   }
 
+  /// "2 days ago" — so a list of series says which was watched most recently,
+  /// not just which episode each is on.
+  String get lastSeenLabel {
+    final d = DateTime.now().difference(updatedAt);
+    if (d.inMinutes < 1) return 'just now';
+    if (d.inMinutes < 60) return '${d.inMinutes}m ago';
+    if (d.inHours < 24) return '${d.inHours}h ago';
+    if (d.inDays == 1) return 'yesterday';
+    if (d.inDays < 7) return '${d.inDays} days ago';
+    if (d.inDays < 30) return '${(d.inDays / 7).floor()}w ago';
+    if (d.inDays < 365) return '${(d.inDays / 30).floor()}mo ago';
+    return '${(d.inDays / 365).floor()}y ago';
+  }
+
+  /// The episode actually last opened, which is what a history list should
+  /// show. [lastEpisode] is the furthest completed and can be lower.
+  int get lastSeenEpisode => resumeEpisode > 0 ? resumeEpisode : lastEpisode;
+
   WatchProgress copyWith({
     int? lastEpisode,
     int? totalEpisodes,

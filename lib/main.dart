@@ -4,6 +4,7 @@ import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'screens/main_shell.dart';
 import 'services/cf_session.dart';
+import 'services/image_session.dart';
 import 'services/preview_data.dart';
 import 'theme.dart';
 
@@ -47,7 +48,18 @@ class _PaheCatAppState extends State<PaheCatApp> {
                 setState(() => _cfReady = true);
                 Diagnostics.dumpPlayPage();
               },
-              child: _cfReady ? const MainShell() : const _SplashScreen(),
+              // The image host needs its own cleared page — see ImageSession.
+              // Started only after the main session is ready, and kept below
+              // the app's UI at full size, because a hidden or one-pixel
+              // WebView gets throttled by the platform.
+              child: _cfReady
+                  ? const Stack(
+                      children: [
+                        Positioned.fill(child: ImageSessionHost()),
+                        Positioned.fill(child: MainShell()),
+                      ],
+                    )
+                  : const _SplashScreen(),
             ),
     );
   }

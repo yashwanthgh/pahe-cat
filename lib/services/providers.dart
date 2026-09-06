@@ -1,5 +1,6 @@
 import 'dart:math' as math;
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import '../models/anime.dart';
 import '../models/episode.dart';
 import '../models/watch_progress.dart';
 import 'animepahe_api.dart';
@@ -170,3 +171,101 @@ final episodesControllerProvider = StateNotifierProvider.family<
     EpisodesNotifier, EpisodesState, String>(
   (ref, animeSession) => EpisodesNotifier(animeSession),
 );
+
+/// The home screen's feed of recently aired anime.
+///
+/// Paged rather than a one-shot fetch: collapsing the airing feed to one card
+/// per show means a single page fills only a fraction of a desktop window, so
+/// the first load takes several pages and scrolling to the bottom takes more.
+class AiringState {
+  final List<Anime> anime;
+  final bool loading;
+  final bool loadingMore;
+  final bool hasMore;
+  final Object? error;
+
+  const AiringState({
+    this.anime = const [],
+    this.loading = true,
+    this.loadingMore = false,
+    this.hasMore = true,
+    this.error,
+  });
+
+  AiringState copyWith({
+    List<Anime>? anime,
+    bool? loading,
+    bool? loadingMore,
+    bool? hasMore,
+    Object? error,
+    bool clearError = false,
+  }) =>
+      AiringState(
+        anime: anime ?? this.anime,
+        loading: loading ?? this.loading,
+        loadingMore: loadingMore ?? this.loadingMore,
+        hasMore: hasMore ?? this.hasMore,
+        error: clearError ? null : (error ?? this.error),
+      );
+}
+
+class AiringNotifier extends StateNotifier<AiringState> {
+  AiringNotifier() : super(const AiringState()) {
+    _loadFirst();
+  }
+
+  /// Enough to fill a large window on first paint without a visible gap.
+  static const _firstBatch = 3;
+  static const _nextBatch = 2;
+
+  int _nextPage = 1;
+  int _lastPage = 1;
+
+  Future<void> _loadFirst() async {
+    try {
+      final r = await AnimePaheApi().getRecent(page: 1, pages: _firstBatch);
+      _nextPage = 1 + _firstBatch;
+      _lastPage = r.lastPage;
+      state = AiringState(
+        anime: r.anime,
+        loading: false,
+        hasMore: _nextPage <= _lastPage,
+      );
+    } catch (e) {
+      state = AiringState(loading: false, hasMore: false, error: e);
+    }
+  }
+
+  Future<void> loadMore() async {
+    if (state.loadingMore || !state.hasMore || state.loading) return;
+    state = state.copyWith(loadingMore: true, clearError: true);
+    try {
+      final r = await AnimePaheApi().getRecent(
+        page: _nextPage,
+        pages: _nextBatch,
+        // Already-shown shows must not reappear further down the grid.
+        exclude: state.anime.map((a) => a.session).toSet(),
+      );
+      _nextPage += _nextBatch;
+      _lastPage = r.lastPage;
+      state = state.copyWith(
+        anime: [...state.anime, ...r.anime],
+        loadingMore: false,
+        hasMore: _nextPage <= _lastPage,
+      );
+    } catch (e) {
+      state = state.copyWith(loadingMore: false, error: e);
+    }
+  }
+
+  Future<void> retry() {
+    if (state.anime.isEmpty) {
+      state = const AiringState();
+      return _loadFirst();
+    }
+    return loadMore();
+  }
+}
+
+final airingProvider =
+    StateNotifierProvider<AiringNotifier, AiringState>((_) => AiringNotifier());

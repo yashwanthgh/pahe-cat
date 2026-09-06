@@ -22,7 +22,16 @@ class EpisodePlayerScreen extends ConsumerStatefulWidget {
   final Anime anime;
   final Episode episode;
 
-  const EpisodePlayerScreen({super.key, required this.anime, required this.episode});
+  /// The loaded episode list, so the player can move to the next episode
+  /// without going back out to the list and picking again.
+  final List<Episode> siblings;
+
+  const EpisodePlayerScreen({
+    super.key,
+    required this.anime,
+    required this.episode,
+    this.siblings = const [],
+  });
 
   @override
   ConsumerState<EpisodePlayerScreen> createState() => _EpisodePlayerScreenState();
@@ -44,6 +53,21 @@ class _EpisodePlayerScreenState extends ConsumerState<EpisodePlayerScreen> {
       appBar: AppBar(
         title: Text('EP ${widget.episode.number}'),
         leading: const BackButton(),
+        actions: [
+          IconButton(
+            icon: const Icon(Icons.skip_previous_rounded),
+            tooltip: _previous == null
+                ? 'No earlier episode loaded'
+                : 'EP ${_previous!.number}',
+            onPressed: _previous == null ? null : () => _jumpTo(_previous!),
+          ),
+          IconButton(
+            icon: const Icon(Icons.skip_next_rounded),
+            tooltip:
+                _next == null ? 'No later episode loaded' : 'EP ${_next!.number}',
+            onPressed: _next == null ? null : () => _jumpTo(_next!),
+          ),
+        ],
       ),
       body: sources.when(
         loading: () => const Center(
@@ -64,6 +88,38 @@ class _EpisodePlayerScreenState extends ConsumerState<EpisodePlayerScreen> {
         ),
       ),
     );
+  }
+
+  /// Neighbours by episode number rather than list position, because the feed
+  /// can contain specials and gaps.
+  Episode? get _next {
+    Episode? best;
+    for (final e in widget.siblings) {
+      if (e.number <= widget.episode.number) continue;
+      if (best == null || e.number < best.number) best = e;
+    }
+    return best;
+  }
+
+  Episode? get _previous {
+    Episode? best;
+    for (final e in widget.siblings) {
+      if (e.number >= widget.episode.number) continue;
+      if (best == null || e.number > best.number) best = e;
+    }
+    return best;
+  }
+
+  /// Replaces this screen rather than stacking, so skipping through several
+  /// episodes does not build a back stack of every one visited.
+  void _jumpTo(Episode e) {
+    Navigator.of(context).pushReplacement(MaterialPageRoute(
+      builder: (_) => EpisodePlayerScreen(
+        anime: widget.anime,
+        episode: e,
+        siblings: widget.siblings,
+      ),
+    ));
   }
 
   void _toast(String msg, {bool error = false}) {
@@ -92,9 +148,16 @@ class _EpisodePlayerScreenState extends ConsumerState<EpisodePlayerScreen> {
       return;
     }
 
+    // Read before opening, so the player can start where this episode was
+    // last left rather than at the beginning.
+    final saved = await WatchProgressDb.getEpisode(
+        widget.anime.session, widget.episode.number);
+    if (!ctx.mounted) return;
+
     await Navigator.of(ctx).push(MaterialPageRoute(
       builder: (_) => WebPlayerScreen(
         kwikUrl: src.kwikUrl,
+        startAt: (saved != null && !saved.isCompleted) ? saved.position : 0,
         title: widget.anime.title,
         subtitle: '${widget.episode.displayTitle} · ${src.label}',
         // Reported when the player closes, so the recorded position is the
@@ -174,11 +237,36 @@ class _SourcePickerState extends State<_SourcePicker> {
   @override
   void initState() {
     super.initState();
-    // Start on the saved preference, but only where it actually exists for
+    // Start on the saved preferences, but only where they actually exist for
     // this episode — otherwise the picker opens on an empty list.
     final wantDub = widget.settings.prefersDub;
     _audioFilter =
         (wantDub && widget.sources.any((s) => s.isDub)) ? 'dub' : 'sub';
+    final wantQ = widget.settings.preferredQuality;
+    if (widget.sources.any((s) => s.quality == wantQ)) _qualityFilter = wantQ;
+  }
+
+  /// The source matching the saved preferences, or the best available.
+  ///
+  /// Having set a preference in Settings and then being asked again on every
+  /// episode is the thing to avoid: this backs a single button that just
+  /// plays, with the full list still below for anything unusual.
+  StreamSource? get _preferred {
+    final playable = widget.sources.where((s) => s.canStream).toList();
+    if (playable.isEmpty) return null;
+    final wantDub = widget.settings.prefersDub;
+    final wantQ = widget.settings.preferredQuality;
+
+    for (final test in [
+      (StreamSource s) => s.isDub == wantDub && s.quality == wantQ,
+      (StreamSource s) => s.isDub == wantDub,
+      (StreamSource s) => s.quality == wantQ,
+    ]) {
+      final hit = playable.where(test);
+      if (hit.isNotEmpty) return hit.first;
+    }
+    // Already sorted sub-first, highest quality first.
+    return playable.first;
   }
 
   List<StreamSource> get _filtered => widget.sources
@@ -257,6 +345,15 @@ class _SourcePickerState extends State<_SourcePicker> {
               ],
             ),
           ).animate().fadeIn(),
+          const SizedBox(height: 16),
+
+          // One tap to play what Settings already asked for.
+          if (_preferred != null)
+            _PlayNowButton(
+              source: _preferred!,
+              busy: widget.isResolving,
+              onTap: () => widget.onWatch(_preferred!),
+            ),
           const SizedBox(height: 20),
 
           // Audio choice. Always shown, with whatever this episode does not
@@ -345,6 +442,61 @@ class _SourcePickerState extends State<_SourcePicker> {
                   ),
             ),
         ],
+      ),
+    );
+  }
+}
+
+/// The primary action: plays the preferred source without further choices.
+class _PlayNowButton extends StatelessWidget {
+  final StreamSource source;
+  final bool busy;
+  final VoidCallback onTap;
+
+  const _PlayNowButton({
+    required this.source,
+    required this.busy,
+    required this.onTap,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return SizedBox(
+      width: double.infinity,
+      child: Material(
+        borderRadius: BorderRadius.circular(14),
+        color: PaheColors.accent,
+        child: InkWell(
+          borderRadius: BorderRadius.circular(14),
+          onTap: busy ? null : onTap,
+          child: Padding(
+            padding: const EdgeInsets.symmetric(vertical: 14, horizontal: 16),
+            child: Row(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                if (busy)
+                  const SizedBox(
+                    width: 18,
+                    height: 18,
+                    child: CircularProgressIndicator(
+                        strokeWidth: 2, color: Colors.white),
+                  )
+                else
+                  const Icon(Icons.play_arrow_rounded,
+                      color: Colors.white, size: 22),
+                const SizedBox(width: 8),
+                Text(
+                  busy ? 'Starting…' : 'Play ${source.quality} ${source.audioLabel}',
+                  style: const TextStyle(
+                    color: Colors.white,
+                    fontSize: 14,
+                    fontWeight: FontWeight.w800,
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
       ),
     );
   }

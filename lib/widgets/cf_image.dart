@@ -2,15 +2,15 @@ import 'dart:async';
 import 'dart:ui' as ui;
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
-import '../services/cf_session.dart';
+import '../services/image_session.dart';
 import '../theme.dart';
 
-/// Loads an animepahe image through the cleared Cloudflare session.
+/// Loads an animepahe poster or snapshot.
 ///
-/// A plain network request to `i.animepahe.*` returns 403 — it is a separate
-/// origin behind its own Cloudflare protection, so neither a Referer nor the
-/// main site's clearance cookie is accepted. The bytes are read from inside
-/// the cleared page instead, which is the same route the API calls take.
+/// Goes through [ImageSession], which reads the bytes from a page on the image
+/// host itself. Neither of the simpler routes works: a direct request is
+/// answered 403 by that host's own Cloudflare, and reading it from the main
+/// site's page is refused by the same-origin policy.
 ///
 /// Requests are capped so a screen full of posters cannot queue dozens of
 /// simultaneous evaluations against the single shared WebView.
@@ -39,7 +39,7 @@ class CfImageProvider extends ImageProvider<CfImageProvider> {
       CfImageProvider key, ImageDecoderCallback decode) async {
     await _gate.acquire();
     try {
-      final bytes = await CfSession().fetchBytes(key.url);
+      final bytes = await ImageSession().fetchBytes(key.url);
       final buffer = await ui.ImmutableBuffer.fromUint8List(bytes);
       // Awaited so the gate is not released until decoding finishes.
       return await decode(buffer);
