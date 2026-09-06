@@ -360,6 +360,15 @@ class _KwikWebViewState extends State<_KwikWebView> {
     _watching = true;
     _fileWatch?.cancel();
     final file = File(path);
+
+    // WebView2 is Chromium, so on Windows the bytes land in a sibling
+    // ".crdownload" file and are renamed to the real name only once the
+    // transfer finishes. Watching just `path` there would see nothing at all
+    // for the length of the download and call it dead after 30s. WKWebView on
+    // macOS writes straight to `path`, so this file never exists and the
+    // sizes below simply stay zero.
+    final staging = File('$path.crdownload');
+
     _stalledTicks = 0;
     _lastSize = -1;
 
@@ -374,19 +383,26 @@ class _KwikWebViewState extends State<_KwikWebView> {
         return;
       }
 
-      int size;
+      int finalSize;
+      int stagingSize;
       try {
-        size = await file.exists() ? await file.length() : 0;
+        finalSize = await file.exists() ? await file.length() : 0;
+        stagingSize = await staging.exists() ? await staging.length() : 0;
       } catch (_) {
         return; // being written to; try again
       }
+      // Only one of the two is ever growing.
+      final size = finalSize > stagingSize ? finalSize : stagingSize;
 
       widget.onProgress?.call(size, expected);
 
-      if (expected > 0 && size >= expected) {
+      // Judged on the file under its final name: on Windows the staging file
+      // reaching full length still precedes the rename.
+      if (expected > 0 && finalSize >= expected) {
         t.cancel();
-        debugPrint('KWIK: file complete at $size bytes');
-        _finish(_mediaUrl, 'webview download', filePath: path, size: size);
+        debugPrint('KWIK: file complete at $finalSize bytes');
+        _finish(_mediaUrl, 'webview download',
+            filePath: path, size: finalSize);
         return;
       }
 
@@ -394,6 +410,23 @@ class _KwikWebViewState extends State<_KwikWebView> {
       // that never appears at all means the patch did not take.
       if (size == _lastSize) {
         _stalledTicks++;
+
+        // With no length to compare against — WebView2 reports -1 when the
+        // server sent none — a file that has stopped growing, sits under its
+        // final name, and has no staging file beside it is a finished
+        // download rather than a stuck one. Two seconds of no growth, so a
+        // slow start is not mistaken for the end.
+        if (expected <= 0 &&
+            finalSize > 0 &&
+            stagingSize == 0 &&
+            _stalledTicks >= 5) {
+          t.cancel();
+          debugPrint('KWIK: file settled at $finalSize bytes, no length given');
+          _finish(_mediaUrl, 'webview download',
+              filePath: path, size: finalSize);
+          return;
+        }
+
         if (_stalledTicks > 75) {
           t.cancel();
           _fail(Exception(size == 0

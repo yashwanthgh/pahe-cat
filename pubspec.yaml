@@ -52,9 +52,17 @@ dependencies:
 #
 # See the PAHE CAT PATCH comments in
 # packages/flutter_inappwebview_macos/macos/Classes/InAppWebView/InAppWebView.swift
+#
+# The Windows copy is vendored for the same reason, though its bug is the
+# opposite one: it never subscribes to WebView2's DownloadStarting at all, so
+# the "onDownloadStartRequest" message its own Dart side handles could never
+# arrive and a download never began. See the PAHE CAT PATCH comments in
+# packages/flutter_inappwebview_windows/windows/in_app_webview/in_app_webview.cpp
 dependency_overrides:
   flutter_inappwebview_macos:
     path: packages/flutter_inappwebview_macos
+  flutter_inappwebview_windows:
+    path: packages/flutter_inappwebview_windows
 
 dev_dependencies:
   flutter_test:
